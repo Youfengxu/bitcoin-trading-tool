@@ -25,3 +25,6 @@
 - [x] Secure Telegram bot notification integration for buy/sell alerts, using stored bot token and configurable chat ID.
 - [x] Compute Sharpe ratio and drawdown from realized signal outcomes during validation runs and persist them in validation_log.
 - [x] Expose persisted validation Sharpe/drawdown through the performance/validation API and display them in the validation history UI.
+- [x] Fix Binance 451 geo-restriction error on klines endpoint — replaced with Kraken (primary), CoinGecko OHLC (secondary), Yahoo Finance via Manus Data API (tertiary).
+- [x] Store Telegram chat ID (8539213108) as a secret for notification delivery.
+- [x] Verify Telegram notification delivery end-to-end.
