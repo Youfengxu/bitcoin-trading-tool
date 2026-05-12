@@ -67,15 +67,25 @@ export default function Strategy() {
     onSuccess: (data) => {
       utils.strategy.active.invalidate();
       const opt = SCHEDULE_OPTIONS.find((o) => o.minutes === data.heartbeatScheduleMinutes);
-      if (data.heartbeatScheduleMinutes === 0) {
+
+      // If the platform cron update failed, show a warning instead of a plain success
+      if (data.cronUpdateWarning) {
+        toast.warning("Schedule saved locally", {
+          description: data.cronUpdateWarning,
+          duration: 8000,
+        });
+      } else if (data.heartbeatScheduleMinutes === 0) {
         toast.success("Automation turned OFF", {
           description: "The signal engine will only run when you press Generate Signal manually.",
           duration: 5000,
         });
       } else {
+        const nextStr = data.nextExecutionAt
+          ? ` · Next run: ${new Date(data.nextExecutionAt).toLocaleTimeString()}`
+          : "";
         toast.success(`Heartbeat schedule set to ${opt?.label ?? data.heartbeatScheduleMinutes + " min"}`, {
-          description: "The signal engine will now fire automatically at this interval. Signal frequency is independent of the candle interval.",
-          duration: 5000,
+          description: `Platform cron updated.${nextStr} Signal frequency is independent of the candle interval.`,
+          duration: 6000,
         });
       }
       setScheduleSaving(false);
@@ -94,7 +104,12 @@ export default function Strategy() {
   const handleScheduleChange = (minutes: number) => {
     if (minutes === currentScheduleMinutes || scheduleSaving) return;
     setScheduleSaving(true);
-    updateSettings.mutate({ heartbeatScheduleMinutes: minutes });
+    // Pass the session cookie so the server can call updateHeartbeatJob on the platform
+    const sessionToken = document.cookie
+      .split("; ")
+      .find((row) => row.startsWith("app_session_id="))
+      ?.split("=")[1] ?? "";
+    updateSettings.mutate({ heartbeatScheduleMinutes: minutes, sessionToken });
   };
 
   const paramFields = useMemo(() => [

@@ -279,6 +279,7 @@ export async function insertStrategyParams(params: {
 export async function updateStrategySettings(settings: {
   candleInterval?: string;
   heartbeatScheduleMinutes?: number;
+  heartbeatTaskUid?: string;
 }) {
   const db = await getDb();
   if (!db) return;

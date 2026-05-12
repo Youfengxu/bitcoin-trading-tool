@@ -1,0 +1,9 @@
+{
+  "query": "UPDATE strategy_params SET heartbeatTaskUid = 'J9JLSwg3LuM4yPXqgYQd9S' WHERE isActive = 1 LIMIT 1;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway06.us-east-1.prod.aws.tidbcloud.com --port 4000 --user V4f4hXVsu9jgJim.root --database AamzWZ7mTAguso7ZXgMYV3 --execute UPDATE strategy_params SET heartbeatTaskUid = 'J9JLSwg3LuM4yPXqgYQd9S' WHERE isActive = 1 LIMIT 1;",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 1831
+}

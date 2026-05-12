@@ -146,6 +146,10 @@ export const strategyParams = mysqlTable("strategy_params", {
    *  The underlying cron still fires at its configured rate; the handler checks
    *  this value and skips if insufficient time has elapsed since the last run. */
   heartbeatScheduleMinutes: int("heartbeatScheduleMinutes").default(60).notNull(),
+  /** Platform cron task UID returned by createHeartbeatJob / manus-heartbeat create.
+   *  Persisted here so updateHeartbeatJob can target the correct job when the
+   *  user changes the schedule from the Strategy Settings page. */
+  heartbeatTaskUid: varchar("heartbeatTaskUid", { length: 65 }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 

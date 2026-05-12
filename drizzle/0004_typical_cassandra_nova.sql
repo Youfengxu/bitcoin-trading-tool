@@ -1,0 +1,1 @@
+ALTER TABLE `strategy_params` ADD `heartbeatTaskUid` varchar(65);

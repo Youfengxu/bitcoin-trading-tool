@@ -31,3 +31,7 @@
 - [x] Fix "Generate Signal" button — root cause was protectedProcedure requiring Manus OAuth login; switched all trading action procedures to publicProcedure so the tool works without authentication.
 - [x] Add candle interval toggle on Live Price page (1M/5M/15M/1H/4H/1D), persisted in DB, shared to Metrics page, with tooltip clarifying it affects metric sensitivity not signal frequency.
 - [x] Add heartbeat schedule toggle on Strategy Settings page (5min/15min/30min/1hr/4hr/12hr/Off), persisted in DB, with software-level throttle in heartbeat handler.
+- [x] Fix heartbeat schedule toggle — now calls updateHeartbeatJob on the platform cron (task UID J9JLSwg3LuM4yPXqgYQd9S) so changing the schedule in the UI actually changes the firing frequency.
+- [x] Clarify runtime vs infrastructure capabilities for the user.
+- [x] Surface heartbeat schedule update errors in the UI instead of swallowing them silently — cronUpdateWarning returned from server and shown as a toast.warning with full explanation.
+- [x] Verify cron update by reading back the platform job state after mutation and showing next execution time — nextExecutionAt returned from updateHeartbeatJob and displayed in the success toast.

@@ -5,6 +5,7 @@ import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { invokeLLM } from "./_core/llm";
 import { notifyOwner } from "./_core/notification";
+import { updateHeartbeatJob, createHeartbeatJob, listHeartbeatJobs, type HeartbeatJobInfo } from "./_core/heartbeat";
 import {
   fetchCurrentPrice,
   fetch24hStats,
@@ -299,13 +300,100 @@ export const appRouter = router({
       .input(z.object({
         candleInterval: z.enum(["1m", "5m", "15m", "1h", "4h", "1d"]).optional(),
         heartbeatScheduleMinutes: z.number().int().min(0).max(720).optional(),
+        sessionToken: z.string().optional(),
       }))
-      .mutation(async ({ input }) => {
-        await db.updateStrategySettings(input);
+      .mutation(async ({ input, ctx }) => {
+        // Persist to DB first
+        await db.updateStrategySettings({
+          candleInterval: input.candleInterval,
+          heartbeatScheduleMinutes: input.heartbeatScheduleMinutes,
+        });
+
+        // If the heartbeat schedule changed, update the platform cron expression
+        if (input.heartbeatScheduleMinutes !== undefined) {
+          const active = await db.getActiveStrategyParams();
+          const taskUid = active?.heartbeatTaskUid;
+          // Derive session token from cookie (needed by the heartbeat SDK)
+          const { parse: parseCookie } = await import("cookie");
+          const sessionToken = input.sessionToken ||
+            (parseCookie(ctx.req.headers.cookie ?? "")["app_session_id"] ?? "");
+
+          const minutes = input.heartbeatScheduleMinutes;
+          // Build the 6-field cron expression (sec min hour dom mon dow)
+          let cronExpr: string;
+          if (minutes === 0) {
+            // OFF: keep cron running hourly but handler will skip signal generation
+            cronExpr = "0 0 * * * *";
+          } else if (minutes < 60) {
+            cronExpr = `0 */${minutes} * * * *`;
+          } else {
+            const hours = Math.round(minutes / 60);
+            cronExpr = `0 0 */${hours} * * *`;
+          }
+
+          let nextExecutionAt: string | null = null;
+          let cronUpdateWarning: string | null = null;
+
+          if (taskUid && sessionToken) {
+            try {
+              await updateHeartbeatJob(taskUid, { cron: cronExpr, enable: minutes > 0 }, sessionToken);
+              // Read back the job to verify the cron was actually updated on the platform
+              const jobList = await listHeartbeatJobs(sessionToken);
+              const updatedJob = jobList.jobs.find((j: HeartbeatJobInfo) => j.taskUid === taskUid);
+              if (updatedJob) {
+                nextExecutionAt = updatedJob.nextExecutionAt ?? null;
+                // Verify the cron expression matches what we sent
+                if (updatedJob.cronExpression !== cronExpr) {
+                  cronUpdateWarning = `Schedule saved locally but platform cron shows '${updatedJob.cronExpression}' instead of '${cronExpr}'. Try again or use the Schedules panel in Settings.`;
+                }
+              } else {
+                nextExecutionAt = null;
+              }
+            } catch (e: any) {
+              const msg = e?.message ?? String(e);
+              console.warn("[heartbeat] Failed to update platform cron:", msg);
+              // Surface the warning to the client but don't throw — DB throttle still works
+              cronUpdateWarning = `Schedule saved locally. Platform cron update failed: ${msg}`;
+            }
+          } else if (!taskUid && sessionToken) {
+            // No task UID yet — create the job and persist the UID
+            try {
+              const job = await createHeartbeatJob({
+                name: "btc-signal-engine",
+                cron: cronExpr,
+                path: "/api/scheduled/heartbeat",
+                description: "Bitcoin trading signal engine",
+              }, sessionToken);
+              await db.updateStrategySettings({ heartbeatTaskUid: job.taskUid });
+              nextExecutionAt = job.nextExecutionAt ?? null;
+            } catch (e: any) {
+              const msg = e?.message ?? String(e);
+              console.warn("[heartbeat] Failed to create platform cron:", msg);
+              cronUpdateWarning = `Schedule saved locally. Platform cron creation failed: ${msg}. Deploy the site first, then change the schedule.`;
+            }
+          } else if (!sessionToken) {
+            cronUpdateWarning = "Schedule saved locally. To sync with the platform cron, log in first or deploy the site and use the Schedules panel in Settings.";
+          }
+
+          if (cronUpdateWarning) {
+            console.warn("[heartbeat]", cronUpdateWarning);
+          }
+
+          const activeAfter = await db.getActiveStrategyParams();
+          return {
+            candleInterval: activeAfter?.candleInterval ?? input.candleInterval ?? "1h",
+            heartbeatScheduleMinutes: activeAfter?.heartbeatScheduleMinutes ?? input.heartbeatScheduleMinutes ?? 60,
+            nextExecutionAt,
+            cronUpdateWarning,
+          };
+        }
+
         const active = await db.getActiveStrategyParams();
         return {
           candleInterval: active?.candleInterval ?? input.candleInterval ?? "1h",
           heartbeatScheduleMinutes: active?.heartbeatScheduleMinutes ?? input.heartbeatScheduleMinutes ?? 60,
+          nextExecutionAt: null,
+          cronUpdateWarning: null,
         };
       }),
     updateParams: publicProcedure
