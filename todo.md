@@ -1,0 +1,27 @@
+# Project TODO
+
+- [x] Real-time Bitcoin price feed using Binance REST API, displayed in live line charts with interval switching.
+- [x] CoinGecko fallback for price data when Binance is unavailable.
+- [x] Bitcoin metrics dashboard with RSI, MACD, Bollinger Bands, EMA/SMA, and volume indicators.
+- [x] MVRV ratio placeholder panel with research source notes.
+- [x] Statistical significance engine using Z-score and rolling standard deviation to classify price moves as trend or blip.
+- [x] Automated buy/sell/hold signal generator based on combined metric thresholds.
+- [x] Signal log that displays each generated signal with detailed reasoning, price, confidence, and timestamp.
+- [x] Include portfolio value at time of trigger in each signal log entry.
+- [x] Self-learning walk-forward optimization loop that backtests recent data and tunes thresholds to maximize weekly returns.
+- [x] Self-validation mechanism tracking predicted versus actual outcomes and win rate.
+- [x] Extend validation reporting to compute and display Sharpe ratio and drawdown from realized outcomes.
+- [x] Persistent Binance paper trading simulator starting with exactly USD $10,000 seed capital.
+- [x] Simulator automatically executes generated buy/sell signals and tracks portfolio value over time.
+- [x] Weekly performance report with weekly returns and BTC buy-and-hold baseline comparison.
+- [x] Add portfolio growth chart to Performance page.
+- [x] Dashboard layout with sidebar navigation for Live Price, Metrics, Signals, Simulator, Performance, and Strategy Settings.
+- [x] On-demand LLM-powered analysis assistant interpreting metrics, recent signal history, and portfolio performance.
+- [x] Owner notification workflow for buy/sell signals including signal rationale, current price, and portfolio value.
+- [x] High-contrast cyberpunk aesthetic with deep black background, neon pink/electric cyan typography, geometric sans-serif feel, glow effects, HUD lines, and corner brackets.
+- [x] Unit tests covering core trading methodology (technical analysis, signal generation, walk-forward optimization, signal validation).
+- [ ] Add Vitest coverage for simulator execution and key router procedures.
+- [ ] Run and verify production build (pnpm build).
+- [x] Secure Telegram bot notification integration for buy/sell alerts, using stored bot token and configurable chat ID.
+- [x] Compute Sharpe ratio and drawdown from realized signal outcomes during validation runs and persist them in validation_log.
+- [x] Expose persisted validation Sharpe/drawdown through the performance/validation API and display them in the validation history UI.

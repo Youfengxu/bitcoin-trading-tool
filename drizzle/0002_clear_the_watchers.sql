@@ -1,0 +1,1 @@
+ALTER TABLE `trading_signals` ADD `portfolioValue` double;

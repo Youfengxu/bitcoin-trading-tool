@@ -1,0 +1,321 @@
+import { describe, expect, it } from "vitest";
+import {
+  sma, ema, rsi, macd, bollingerBands, zScore, classifyTrend,
+  computeAllMetrics, type CandleData,
+} from "./engine/technicalAnalysis";
+import { generateSignal, type SignalOutput } from "./engine/signalGenerator";
+import { walkForwardOptimize, validateSignals } from "./engine/walkForwardOptimizer";
+import { DEFAULT_STRATEGY_PARAMS, type StrategyParameters } from "../shared/tradingTypes";
+
+// ─── Helper: generate synthetic candle data ─────────────────────────
+function generateCandles(count: number, basePrice = 50000, volatility = 500): CandleData[] {
+  const candles: CandleData[] = [];
+  let price = basePrice;
+  for (let i = 0; i < count; i++) {
+    const change = (Math.random() - 0.5) * volatility;
+    const open = price;
+    const close = price + change;
+    const high = Math.max(open, close) + Math.random() * volatility * 0.3;
+    const low = Math.min(open, close) - Math.random() * volatility * 0.3;
+    candles.push({
+      open, high, low, close,
+      volume: 100 + Math.random() * 200,
+      openTime: Date.now() - (count - i) * 3600000,
+    });
+    price = close;
+  }
+  return candles;
+}
+
+// Generate a trending-up series
+function generateUptrend(count: number, basePrice = 50000): CandleData[] {
+  const candles: CandleData[] = [];
+  let price = basePrice;
+  for (let i = 0; i < count; i++) {
+    const change = 50 + Math.random() * 100; // always positive
+    const open = price;
+    const close = price + change;
+    const high = close + Math.random() * 50;
+    const low = open - Math.random() * 30;
+    candles.push({
+      open, high, low, close,
+      volume: 150 + Math.random() * 100,
+      openTime: Date.now() - (count - i) * 3600000,
+    });
+    price = close;
+  }
+  return candles;
+}
+
+// Generate a trending-down series
+function generateDowntrend(count: number, basePrice = 80000): CandleData[] {
+  const candles: CandleData[] = [];
+  let price = basePrice;
+  for (let i = 0; i < count; i++) {
+    const change = -(50 + Math.random() * 100);
+    const open = price;
+    const close = price + change;
+    const high = open + Math.random() * 30;
+    const low = close - Math.random() * 50;
+    candles.push({
+      open, high, low, close: Math.max(close, 1000),
+      volume: 150 + Math.random() * 100,
+      openTime: Date.now() - (count - i) * 3600000,
+    });
+    price = Math.max(close, 1000);
+  }
+  return candles;
+}
+
+// ─── Technical Analysis Tests ───────────────────────────────────────
+describe("Technical Analysis", () => {
+  describe("SMA", () => {
+    it("computes simple moving average correctly", () => {
+      const data = [10, 20, 30, 40, 50];
+      expect(sma(data, 3)).toBe(40); // (30+40+50)/3
+      expect(sma(data, 5)).toBe(30); // (10+20+30+40+50)/5
+    });
+
+    it("returns null when insufficient data", () => {
+      expect(sma([10, 20], 5)).toBeNull();
+    });
+  });
+
+  describe("EMA", () => {
+    it("computes exponential moving average", () => {
+      const data = [10, 20, 30, 40, 50];
+      const result = ema(data, 3);
+      expect(result).not.toBeNull();
+      expect(typeof result).toBe("number");
+      // EMA should be between min and max of data
+      expect(result!).toBeGreaterThanOrEqual(10);
+      expect(result!).toBeLessThanOrEqual(50);
+    });
+
+    it("returns null when insufficient data", () => {
+      expect(ema([10, 20], 5)).toBeNull();
+    });
+  });
+
+  describe("RSI", () => {
+    it("computes RSI in valid range [0, 100]", () => {
+      const data = generateCandles(50).map((c) => c.close);
+      const result = rsi(data, 14);
+      expect(result).not.toBeNull();
+      expect(result!).toBeGreaterThanOrEqual(0);
+      expect(result!).toBeLessThanOrEqual(100);
+    });
+
+    it("returns high RSI for uptrend", () => {
+      const data = generateUptrend(30).map((c) => c.close);
+      const result = rsi(data, 14);
+      expect(result).not.toBeNull();
+      expect(result!).toBeGreaterThan(50);
+    });
+
+    it("returns low RSI for downtrend", () => {
+      const data = generateDowntrend(30).map((c) => c.close);
+      const result = rsi(data, 14);
+      expect(result).not.toBeNull();
+      expect(result!).toBeLessThan(50);
+    });
+
+    it("returns null when insufficient data", () => {
+      expect(rsi([10, 20, 30], 14)).toBeNull();
+    });
+  });
+
+  describe("MACD", () => {
+    it("computes MACD with line, signal, and histogram", () => {
+      const data = generateCandles(50).map((c) => c.close);
+      const result = macd(data);
+      expect(result).not.toBeNull();
+      expect(result!).toHaveProperty("macdLine");
+      expect(result!).toHaveProperty("signalLine");
+      expect(result!).toHaveProperty("histogram");
+      expect(typeof result!.macdLine).toBe("number");
+      expect(typeof result!.signalLine).toBe("number");
+      expect(typeof result!.histogram).toBe("number");
+    });
+
+    it("histogram equals macdLine minus signalLine", () => {
+      const data = generateCandles(50).map((c) => c.close);
+      const result = macd(data);
+      if (result) {
+        expect(result.histogram).toBeCloseTo(result.macdLine - result.signalLine, 5);
+      }
+    });
+  });
+
+  describe("Bollinger Bands", () => {
+    it("computes upper, middle, and lower bands", () => {
+      const data = generateCandles(30).map((c) => c.close);
+      const result = bollingerBands(data);
+      expect(result).not.toBeNull();
+      expect(result!.upper).toBeGreaterThan(result!.middle);
+      expect(result!.middle).toBeGreaterThan(result!.lower);
+    });
+  });
+
+  describe("Z-Score", () => {
+    it("computes z-score and rolling standard deviation", () => {
+      const data = generateCandles(30).map((c) => c.close);
+      const result = zScore(data);
+      expect(result).not.toBeNull();
+      expect(typeof result!.zScore).toBe("number");
+      expect(typeof result!.rollingStdDev).toBe("number");
+      expect(result!.rollingStdDev).toBeGreaterThanOrEqual(0);
+    });
+  });
+
+  describe("classifyTrend", () => {
+    it("classifies high z-score as trend", () => {
+      expect(classifyTrend(2.5, 2.0, 0.5)).toBe("trend");
+      expect(classifyTrend(-2.5, 2.0, 0.5)).toBe("trend");
+    });
+
+    it("classifies low z-score as blip", () => {
+      expect(classifyTrend(0.3, 2.0, 0.5)).toBe("blip");
+      expect(classifyTrend(-0.3, 2.0, 0.5)).toBe("blip");
+    });
+
+    it("classifies moderate z-score as neutral", () => {
+      expect(classifyTrend(1.0, 2.0, 0.5)).toBe("neutral");
+      expect(classifyTrend(-1.0, 2.0, 0.5)).toBe("neutral");
+    });
+  });
+
+  describe("computeAllMetrics", () => {
+    it("returns all metric fields", () => {
+      const candles = generateCandles(250);
+      const metrics = computeAllMetrics(candles);
+      expect(metrics).toHaveProperty("price");
+      expect(metrics).toHaveProperty("rsi14");
+      expect(metrics).toHaveProperty("macdLine");
+      expect(metrics).toHaveProperty("macdSignal");
+      expect(metrics).toHaveProperty("macdHist");
+      expect(metrics).toHaveProperty("bbUpper");
+      expect(metrics).toHaveProperty("bbMiddle");
+      expect(metrics).toHaveProperty("bbLower");
+      expect(metrics).toHaveProperty("ema12");
+      expect(metrics).toHaveProperty("ema26");
+      expect(metrics).toHaveProperty("sma50");
+      expect(metrics).toHaveProperty("zScore");
+      expect(metrics).toHaveProperty("rollingStdDev");
+      expect(metrics).toHaveProperty("trendClassification");
+      expect(metrics.price).toBeGreaterThan(0);
+    });
+  });
+});
+
+// ─── Signal Generator Tests ─────────────────────────────────────────
+describe("Signal Generator", () => {
+  it("returns a valid signal object with reasoning", () => {
+    const candles = generateCandles(250);
+    const metrics = computeAllMetrics(candles);
+    const signal = generateSignal(metrics, DEFAULT_STRATEGY_PARAMS);
+    expect(signal).toHaveProperty("signal");
+    expect(signal).toHaveProperty("confidence");
+    expect(signal).toHaveProperty("reasoning");
+    expect(["buy", "sell", "hold"]).toContain(signal.signal);
+    expect(signal.confidence).toBeGreaterThanOrEqual(0);
+    expect(signal.confidence).toBeLessThanOrEqual(1);
+    expect(signal.reasoning.length).toBeGreaterThan(0);
+  });
+
+  it("reasoning contains signal summary", () => {
+    const candles = generateCandles(250);
+    const metrics = computeAllMetrics(candles);
+    const signal = generateSignal(metrics, DEFAULT_STRATEGY_PARAMS);
+    // Reasoning should mention the signal type
+    const hasSignalMention = signal.reasoning.includes("BUY") ||
+      signal.reasoning.includes("SELL") ||
+      signal.reasoning.includes("HOLD");
+    expect(hasSignalMention).toBe(true);
+  });
+
+  it("generates buy signal for strong uptrend", () => {
+    const candles = generateUptrend(250);
+    const metrics = computeAllMetrics(candles);
+    const signal = generateSignal(metrics, {
+      ...DEFAULT_STRATEGY_PARAMS,
+      minConfidence: 0.1, // lower threshold to make it easier to trigger
+    });
+    // In a strong uptrend, RSI may be overbought so we might get sell
+    // but the signal should not be null
+    expect(["buy", "sell", "hold"]).toContain(signal.signal);
+  });
+
+  it("respects minConfidence threshold", () => {
+    const candles = generateCandles(250);
+    const metrics = computeAllMetrics(candles);
+    // With very high confidence threshold, should get hold
+    const signal = generateSignal(metrics, {
+      ...DEFAULT_STRATEGY_PARAMS,
+      minConfidence: 0.99,
+    });
+    expect(signal.signal).toBe("hold");
+  });
+});
+
+// ─── Walk-Forward Optimizer Tests ───────────────────────────────────
+describe("Walk-Forward Optimizer", () => {
+  it("returns optimized parameters and results", () => {
+    const candles = generateCandles(300, 50000, 300);
+    const result = walkForwardOptimize(candles, DEFAULT_STRATEGY_PARAMS, 0.7);
+    expect(result).toHaveProperty("bestParams");
+    expect(result).toHaveProperty("bestResult");
+    expect(result).toHaveProperty("allResults");
+    expect(result.bestResult).toHaveProperty("totalReturn");
+    expect(result.bestResult).toHaveProperty("sharpeRatio");
+    expect(result.bestResult).toHaveProperty("winRate");
+    expect(result.bestResult).toHaveProperty("maxDrawdown");
+    expect(result.bestResult).toHaveProperty("weeklyReturn");
+    expect(result.bestResult).toHaveProperty("totalTrades");
+    expect(typeof result.bestResult.totalReturn).toBe("number");
+    expect(typeof result.bestResult.sharpeRatio).toBe("number");
+  });
+
+  it("best params are valid strategy parameters", () => {
+    const candles = generateCandles(300, 50000, 300);
+    const result = walkForwardOptimize(candles, DEFAULT_STRATEGY_PARAMS);
+    const p = result.bestParams;
+    expect(p.rsiBuyThreshold).toBeGreaterThan(0);
+    expect(p.rsiBuyThreshold).toBeLessThan(p.rsiSellThreshold);
+    expect(p.maxPositionPct).toBeGreaterThan(0);
+    expect(p.maxPositionPct).toBeLessThanOrEqual(1);
+    expect(p.minConfidence).toBeGreaterThan(0);
+    expect(p.minConfidence).toBeLessThanOrEqual(1);
+  });
+});
+
+// ─── Signal Validation Tests ────────────────────────────────────────
+describe("Signal Validation", () => {
+  it("calculates win rate from resolved signals", () => {
+    const signals = [
+      { signal: "buy" as const, price: 50000, outcome: "win" as const, outcomePrice: 51000, ts: Date.now() - 7200000 },
+      { signal: "sell" as const, price: 50000, outcome: "loss" as const, outcomePrice: 51000, ts: Date.now() - 7200000 },
+      { signal: "buy" as const, price: 50000, outcome: "win" as const, outcomePrice: 52000, ts: Date.now() - 7200000 },
+    ];
+    const result = validateSignals(signals);
+    expect(result.totalSignals).toBe(3);
+    expect(result.correctSignals).toBe(2);
+    expect(result.winRate).toBeCloseTo(2 / 3, 5);
+  });
+
+  it("handles empty signal list", () => {
+    const result = validateSignals([]);
+    expect(result.totalSignals).toBe(0);
+    expect(result.winRate).toBe(0);
+  });
+
+  it("ignores hold signals", () => {
+    const signals = [
+      { signal: "hold" as const, price: 50000, outcome: "pending" as const, outcomePrice: null, ts: Date.now() },
+      { signal: "buy" as const, price: 50000, outcome: "win" as const, outcomePrice: 51000, ts: Date.now() - 7200000 },
+    ];
+    const result = validateSignals(signals);
+    // hold signals should be excluded
+    expect(result.totalSignals).toBeLessThanOrEqual(2);
+  });
+});

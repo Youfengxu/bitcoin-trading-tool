@@ -1,0 +1,17 @@
+UI Review Notes - May 12, 2026
+
+Screenshot 1: Live Price page
+- Cyberpunk aesthetic is working: deep black background, neon pink price, cyan headings
+- Sidebar navigation shows all 6 pages: Live Price, Metrics, Signals, Simulator, Performance, Strategy
+- BTC NEURAL branding in top-left
+- Current price showing $80,415.47 with live data from Binance
+- 24H Change: -1.16%, 24H Range: $80,189 - $82,137, 24H Volume: 12,741 BTC
+- Price chart rendering with neon pink line on dark background
+- Interval selector buttons: 1M, 5M, 15M, 1H (selected), 4H, 1D
+- HUD-style corner brackets on cards
+- User avatar and info at bottom of sidebar
+- Font: Orbitron for headings, Share Tech Mono for data
+
+Status: TypeScript 0 errors, LSP no errors, dev server running
+All pages exist and compile correctly. 26 tests passing.
+Strategy.tsx Vite error in logs is stale cache - file exists and TS compiles clean.

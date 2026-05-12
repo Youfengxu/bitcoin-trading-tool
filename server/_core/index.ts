@@ -8,6 +8,7 @@ import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
+import { handleHeartbeat } from "../heartbeatHandler";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -36,6 +37,17 @@ async function startServer() {
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   registerStorageProxy(app);
   registerOAuthRoutes(app);
+
+  // Scheduled endpoint for heartbeat cron
+  app.post("/api/scheduled/heartbeat", async (_req, res) => {
+    try {
+      await handleHeartbeat();
+      res.json({ ok: true });
+    } catch (error) {
+      console.error("[Scheduled] Heartbeat error:", error);
+      res.status(500).json({ error: "Heartbeat failed" });
+    }
+  });
   // tRPC API
   app.use(
     "/api/trpc",

@@ -1,0 +1,9 @@
+{
+  "query": "ALTER TABLE `trading_signals` ADD `portfolioValue` double;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway06.us-east-1.prod.aws.tidbcloud.com --port 4000 --user V4f4hXVsu9jgJim.root --database AamzWZ7mTAguso7ZXgMYV3 --execute ALTER TABLE `trading_signals` ADD `portfolioValue` double;",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 2824
+}

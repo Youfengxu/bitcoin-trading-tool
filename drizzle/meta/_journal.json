@@ -1,5 +1,27 @@
 {
   "version": "7",
   "dialect": "mysql",
-  "entries": []
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1778593149427,
+      "tag": "0000_loud_meteorite",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1778594900753,
+      "tag": "0001_eminent_typhoid_mary",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1778600888089,
+      "tag": "0002_clear_the_watchers",
+      "breakpoints": true
+    }
+  ]
 }
