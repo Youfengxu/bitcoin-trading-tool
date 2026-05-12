@@ -20,8 +20,8 @@
 - [x] Owner notification workflow for buy/sell signals including signal rationale, current price, and portfolio value.
 - [x] High-contrast cyberpunk aesthetic with deep black background, neon pink/electric cyan typography, geometric sans-serif feel, glow effects, HUD lines, and corner brackets.
 - [x] Unit tests covering core trading methodology (technical analysis, signal generation, walk-forward optimization, signal validation).
-- [ ] Add Vitest coverage for simulator execution and key router procedures.
-- [ ] Run and verify production build (pnpm build).
+- [x] Add Vitest coverage for simulator execution and key router procedures.
+- [x] Run and verify production build (pnpm build).
 - [x] Secure Telegram bot notification integration for buy/sell alerts, using stored bot token and configurable chat ID.
 - [x] Compute Sharpe ratio and drawdown from realized signal outcomes during validation runs and persist them in validation_log.
 - [x] Expose persisted validation Sharpe/drawdown through the performance/validation API and display them in the validation history UI.
