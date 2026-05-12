@@ -315,8 +315,8 @@ export const appRouter = router({
           const taskUid = active?.heartbeatTaskUid;
           // Derive session token from cookie (needed by the heartbeat SDK)
           const { parse: parseCookie } = await import("cookie");
-          const sessionToken = input.sessionToken ||
-            (parseCookie(ctx.req.headers.cookie ?? "")["app_session_id"] ?? "");
+          const sessionToken = (input.sessionToken ||
+            parseCookie(ctx.req.headers.cookie ?? "")["app_session_id"]) ?? "";
 
           const minutes = input.heartbeatScheduleMinutes;
           // Build the 6-field cron expression (sec min hour dom mon dow)
@@ -356,20 +356,34 @@ export const appRouter = router({
               cronUpdateWarning = `Schedule saved locally. Platform cron update failed: ${msg}`;
             }
           } else if (!taskUid && sessionToken) {
-            // No task UID yet — create the job and persist the UID
+            // No task UID stored — first check if the job already exists on the platform
+            // (handles the case where the job was created via CLI or a previous deployment)
             try {
-              const job = await createHeartbeatJob({
-                name: "btc-signal-engine",
-                cron: cronExpr,
-                path: "/api/scheduled/heartbeat",
-                description: "Bitcoin trading signal engine",
-              }, sessionToken);
-              await db.updateStrategySettings({ heartbeatTaskUid: job.taskUid });
-              nextExecutionAt = job.nextExecutionAt ?? null;
+              const existingList = await listHeartbeatJobs(sessionToken);
+              const existingJob = existingList.jobs.find((j: HeartbeatJobInfo) => j.name === "btc-signal-engine");
+              if (existingJob) {
+                // Job already exists — persist the UID and update it
+                await db.updateStrategySettings({ heartbeatTaskUid: existingJob.taskUid });
+                await updateHeartbeatJob(existingJob.taskUid, { cron: cronExpr, enable: minutes > 0 }, sessionToken);
+                // Read back to confirm
+                const verifyList = await listHeartbeatJobs(sessionToken);
+                const verifiedJob = verifyList.jobs.find((j: HeartbeatJobInfo) => j.taskUid === existingJob.taskUid);
+                nextExecutionAt = verifiedJob?.nextExecutionAt ?? null;
+              } else {
+                // Truly no job yet — create it
+                const job = await createHeartbeatJob({
+                  name: "btc-signal-engine",
+                  cron: cronExpr,
+                  path: "/api/scheduled/heartbeat",
+                  description: "Bitcoin trading signal engine: generates signals, executes simulator trades, runs validation and weekly optimization",
+                }, sessionToken);
+                await db.updateStrategySettings({ heartbeatTaskUid: job.taskUid });
+                nextExecutionAt = job.nextExecutionAt ?? null;
+              }
             } catch (e: any) {
               const msg = e?.message ?? String(e);
-              console.warn("[heartbeat] Failed to create platform cron:", msg);
-              cronUpdateWarning = `Schedule saved locally. Platform cron creation failed: ${msg}. Deploy the site first, then change the schedule.`;
+              console.warn("[heartbeat] Failed to create/find platform cron:", msg);
+              cronUpdateWarning = `Schedule saved locally. Platform cron update failed: ${msg}`;
             }
           } else if (!sessionToken) {
             cronUpdateWarning = "Schedule saved locally. To sync with the platform cron, log in first or deploy the site and use the Schedules panel in Settings.";

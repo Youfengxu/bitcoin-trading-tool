@@ -283,13 +283,26 @@ export async function updateStrategySettings(settings: {
 }) {
   const db = await getDb();
   if (!db) return;
-  // Apply to the currently active row; if none exists yet, it will take effect on next insert.
+  // Find the currently active row
   const active = await db.select({ id: strategyParams.id })
     .from(strategyParams).where(eq(strategyParams.isActive, true)).limit(1);
   if (active.length > 0) {
+    // Update existing active row
     await db.update(strategyParams)
       .set(settings)
       .where(eq(strategyParams.id, active[0]!.id));
+  } else {
+    // No active row exists (e.g. fresh production deployment) — seed one with defaults
+    const { DEFAULT_STRATEGY_PARAMS } = await import("../shared/tradingTypes");
+    await db.insert(strategyParams).values({
+      version: 1,
+      params: JSON.stringify(DEFAULT_STRATEGY_PARAMS),
+      isActive: true,
+      notes: "Auto-seeded on first settings update",
+      candleInterval: settings.candleInterval ?? "1h",
+      heartbeatScheduleMinutes: settings.heartbeatScheduleMinutes ?? 60,
+      heartbeatTaskUid: settings.heartbeatTaskUid ?? null,
+    });
   }
 }
 

@@ -35,3 +35,5 @@
 - [x] Clarify runtime vs infrastructure capabilities for the user.
 - [x] Surface heartbeat schedule update errors in the UI instead of swallowing them silently — cronUpdateWarning returned from server and shown as a toast.warning with full explanation.
 - [x] Verify cron update by reading back the platform job state after mutation and showing next execution time — nextExecutionAt returned from updateHeartbeatJob and displayed in the success toast.
+- [x] Fix 409 heartbeat conflict: router now lists existing jobs first, finds the existing "btc-signal-engine" by name, persists its UID, and updates it instead of creating a duplicate. Also fixed the operator precedence esbuild error on line 318.
+- [x] Ensure updateStrategySettings upserts an active strategy_params row when none exists so heartbeatTaskUid can be persisted on first use.
