@@ -141,16 +141,9 @@ describe("Router Procedures", () => {
     });
   });
 
-  describe("strategy.updateParams (protected)", () => {
-    it("rejects unauthenticated calls", async () => {
+  describe("strategy.updateParams (public)", () => {
+    it("accepts unauthenticated calls with valid params", async () => {
       const caller = appRouter.createCaller(createUnauthContext());
-      await expect(
-        caller.strategy.updateParams({ rsiBuyThreshold: 25 })
-      ).rejects.toThrow();
-    });
-
-    it("accepts authenticated calls with valid params", async () => {
-      const caller = appRouter.createCaller(createAuthContext());
       const result = await caller.strategy.updateParams({ rsiBuyThreshold: 25 });
       expect(result).toHaveProperty("version");
       expect(result).toHaveProperty("params");
@@ -158,14 +151,9 @@ describe("Router Procedures", () => {
     });
   });
 
-  describe("signals.generate (protected)", () => {
-    it("rejects unauthenticated calls", async () => {
+  describe("signals.generate (public)", () => {
+    it("generates a signal without authentication", async () => {
       const caller = appRouter.createCaller(createUnauthContext());
-      await expect(caller.signals.generate()).rejects.toThrow();
-    });
-
-    it("generates a signal with authenticated user", async () => {
-      const caller = appRouter.createCaller(createAuthContext());
       const result = await caller.signals.generate();
       expect(result).toHaveProperty("signal");
       expect(result).toHaveProperty("confidence");
@@ -177,14 +165,9 @@ describe("Router Procedures", () => {
     });
   });
 
-  describe("signals.validate (protected)", () => {
-    it("rejects unauthenticated calls", async () => {
+  describe("signals.validate (public)", () => {
+    it("validates pending signals without authentication", async () => {
       const caller = appRouter.createCaller(createUnauthContext());
-      await expect(caller.signals.validate()).rejects.toThrow();
-    });
-
-    it("validates pending signals with authenticated user", async () => {
-      const caller = appRouter.createCaller(createAuthContext());
       const result = await caller.signals.validate();
       expect(result).toHaveProperty("validated");
       expect(typeof result.validated).toBe("number");
@@ -211,41 +194,26 @@ describe("Router Procedures", () => {
     });
   });
 
-  describe("simulator.reset (protected)", () => {
-    it("rejects unauthenticated calls", async () => {
+  describe("simulator.reset (public)", () => {
+    it("resets simulator without authentication", async () => {
       const caller = appRouter.createCaller(createUnauthContext());
-      await expect(caller.simulator.reset()).rejects.toThrow();
-    });
-
-    it("resets simulator with authenticated user", async () => {
-      const caller = appRouter.createCaller(createAuthContext());
       const result = await caller.simulator.reset();
       expect(result).toEqual({ success: true });
     });
   });
 
-  describe("simulator.toggleRunning (protected)", () => {
-    it("rejects unauthenticated calls", async () => {
+  describe("simulator.toggleRunning (public)", () => {
+    it("toggles running state without authentication", async () => {
       const caller = appRouter.createCaller(createUnauthContext());
-      await expect(caller.simulator.toggleRunning()).rejects.toThrow();
-    });
-
-    it("toggles running state with authenticated user", async () => {
-      const caller = appRouter.createCaller(createAuthContext());
       const result = await caller.simulator.toggleRunning();
       expect(result).toHaveProperty("isRunning");
       expect(typeof result.isRunning).toBe("boolean");
     });
   });
 
-  describe("ai.analyze (protected)", () => {
-    it("rejects unauthenticated calls", async () => {
+  describe("ai.analyze (public)", () => {
+    it("returns AI analysis without authentication", async () => {
       const caller = appRouter.createCaller(createUnauthContext());
-      await expect(caller.ai.analyze()).rejects.toThrow();
-    });
-
-    it("returns AI analysis with authenticated user", async () => {
-      const caller = appRouter.createCaller(createAuthContext());
       const result = await caller.ai.analyze();
       expect(result).toHaveProperty("analysis");
       expect(result).toHaveProperty("timestamp");

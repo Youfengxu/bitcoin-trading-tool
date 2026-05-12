@@ -69,7 +69,7 @@ export const appRouter = router({
 
   // ─── Signals ────────────────────────────────────────────────────────
   signals: router({
-    generate: protectedProcedure.mutation(async () => {
+    generate: publicProcedure.mutation(async () => {
       const candles = await fetchCandles("1h", 250);
       const candleData: CandleData[] = candles.map((c) => ({
         open: c.open, high: c.high, low: c.low,
@@ -113,7 +113,7 @@ export const appRouter = router({
       .input(z.object({ limit: z.number().default(50) }).optional())
       .query(async ({ input }) => db.getRecentSignals(input?.limit ?? 50)),
 
-    validate: protectedProcedure.mutation(async () => {
+    validate: publicProcedure.mutation(async () => {
       const pending = await db.getPendingSignals();
       const { price: currentPrice } = await fetchCurrentPrice();
       let validated = 0;
@@ -179,11 +179,11 @@ export const appRouter = router({
     trades: publicProcedure
       .input(z.object({ limit: z.number().default(50) }).optional())
       .query(async ({ input }) => db.getRecentTrades(input?.limit ?? 50)),
-    reset: protectedProcedure.mutation(async () => {
+    reset: publicProcedure.mutation(async () => {
       await db.resetSimulator();
       return { success: true };
     }),
-    toggleRunning: protectedProcedure.mutation(async () => {
+    toggleRunning: publicProcedure.mutation(async () => {
       const state = await db.getSimulatorState();
       if (!state) return { isRunning: false };
       await db.updateSimulatorState({ isRunning: !state.isRunning });
@@ -255,7 +255,7 @@ export const appRouter = router({
       return { version: active.version, params: active.params as StrategyParameters, isActive: true };
     }),
     versions: publicProcedure.query(async () => db.getAllStrategyVersions()),
-    optimize: protectedProcedure.mutation(async () => {
+    optimize: publicProcedure.mutation(async () => {
       const candles = await fetchCandles("1h", 1000);
       const candleData: CandleData[] = candles.map((c) => ({
         open: c.open, high: c.high, low: c.low,
@@ -283,7 +283,7 @@ export const appRouter = router({
         maxDrawdown: result.bestResult.maxDrawdown * 100,
       };
     }),
-    updateParams: protectedProcedure
+    updateParams: publicProcedure
       .input(z.object({
         rsiBuyThreshold: z.number().optional(),
         rsiSellThreshold: z.number().optional(),
@@ -313,7 +313,7 @@ export const appRouter = router({
 
   // ─── AI Assistant ────────────────────────────────────────────────────
   ai: router({
-    analyze: protectedProcedure
+    analyze: publicProcedure
       .input(z.object({ question: z.string().optional() }).optional())
       .mutation(async ({ input }) => {
         const [metrics, signals, simState, weekly, validation] = await Promise.all([

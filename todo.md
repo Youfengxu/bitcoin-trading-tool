@@ -28,3 +28,4 @@
 - [x] Fix Binance 451 geo-restriction error on klines endpoint — replaced with Kraken (primary), CoinGecko OHLC (secondary), Yahoo Finance via Manus Data API (tertiary).
 - [x] Store Telegram chat ID (8539213108) as a secret for notification delivery.
 - [x] Verify Telegram notification delivery end-to-end.
+- [x] Fix "Generate Signal" button — root cause was protectedProcedure requiring Manus OAuth login; switched all trading action procedures to publicProcedure so the tool works without authentication.
