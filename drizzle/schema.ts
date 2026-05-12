@@ -137,6 +137,15 @@ export const strategyParams = mysqlTable("strategy_params", {
   backtestWinRate: double("backtestWinRate"),
   isActive: boolean("isActive").default(false).notNull(),
   notes: text("notes"),
+  /** Candle interval used for metric computation and signal quality per run.
+   *  Valid values: '1m' | '5m' | '15m' | '1h' | '4h' | '1d'
+   *  Defaults to '1h'. Does NOT affect how often the engine fires (see heartbeatScheduleMinutes). */
+  candleInterval: varchar("candleInterval", { length: 10 }).default("1h").notNull(),
+  /** Software-level throttle: minimum minutes between automated heartbeat runs.
+   *  0 = Off (heartbeat fires but skips signal generation).
+   *  The underlying cron still fires at its configured rate; the handler checks
+   *  this value and skips if insufficient time has elapsed since the last run. */
+  heartbeatScheduleMinutes: int("heartbeatScheduleMinutes").default(60).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 

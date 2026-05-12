@@ -22,6 +22,13 @@
       "when": 1778600888089,
       "tag": "0002_clear_the_watchers",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1778626682158,
+      "tag": "0003_overconfident_iron_monger",
+      "breakpoints": true
     }
   ]
 }

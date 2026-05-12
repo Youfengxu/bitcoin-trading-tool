@@ -29,3 +29,5 @@
 - [x] Store Telegram chat ID (8539213108) as a secret for notification delivery.
 - [x] Verify Telegram notification delivery end-to-end.
 - [x] Fix "Generate Signal" button — root cause was protectedProcedure requiring Manus OAuth login; switched all trading action procedures to publicProcedure so the tool works without authentication.
+- [x] Add candle interval toggle on Live Price page (1M/5M/15M/1H/4H/1D), persisted in DB, shared to Metrics page, with tooltip clarifying it affects metric sensitivity not signal frequency.
+- [x] Add heartbeat schedule toggle on Strategy Settings page (5min/15min/30min/1hr/4hr/12hr/Off), persisted in DB, with software-level throttle in heartbeat handler.

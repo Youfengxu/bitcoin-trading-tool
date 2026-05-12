@@ -276,6 +276,22 @@ export async function insertStrategyParams(params: {
   await db.insert(strategyParams).values(params);
 }
 
+export async function updateStrategySettings(settings: {
+  candleInterval?: string;
+  heartbeatScheduleMinutes?: number;
+}) {
+  const db = await getDb();
+  if (!db) return;
+  // Apply to the currently active row; if none exists yet, it will take effect on next insert.
+  const active = await db.select({ id: strategyParams.id })
+    .from(strategyParams).where(eq(strategyParams.isActive, true)).limit(1);
+  if (active.length > 0) {
+    await db.update(strategyParams)
+      .set(settings)
+      .where(eq(strategyParams.id, active[0]!.id));
+  }
+}
+
 export async function getAllStrategyVersions() {
   const db = await getDb();
   if (!db) return [];

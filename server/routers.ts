@@ -251,8 +251,20 @@ export const appRouter = router({
   strategy: router({
     active: publicProcedure.query(async () => {
       const active = await db.getActiveStrategyParams();
-      if (!active) return { version: 0, params: DEFAULT_STRATEGY_PARAMS, isActive: false };
-      return { version: active.version, params: active.params as StrategyParameters, isActive: true };
+      if (!active) return {
+        version: 0,
+        params: DEFAULT_STRATEGY_PARAMS,
+        isActive: false,
+        candleInterval: "1h",
+        heartbeatScheduleMinutes: 60,
+      };
+      return {
+        version: active.version,
+        params: active.params as StrategyParameters,
+        isActive: true,
+        candleInterval: active.candleInterval ?? "1h",
+        heartbeatScheduleMinutes: active.heartbeatScheduleMinutes ?? 60,
+      };
     }),
     versions: publicProcedure.query(async () => db.getAllStrategyVersions()),
     optimize: publicProcedure.mutation(async () => {
@@ -283,6 +295,19 @@ export const appRouter = router({
         maxDrawdown: result.bestResult.maxDrawdown * 100,
       };
     }),
+    updateSettings: publicProcedure
+      .input(z.object({
+        candleInterval: z.enum(["1m", "5m", "15m", "1h", "4h", "1d"]).optional(),
+        heartbeatScheduleMinutes: z.number().int().min(0).max(720).optional(),
+      }))
+      .mutation(async ({ input }) => {
+        await db.updateStrategySettings(input);
+        const active = await db.getActiveStrategyParams();
+        return {
+          candleInterval: active?.candleInterval ?? input.candleInterval ?? "1h",
+          heartbeatScheduleMinutes: active?.heartbeatScheduleMinutes ?? input.heartbeatScheduleMinutes ?? 60,
+        };
+      }),
     updateParams: publicProcedure
       .input(z.object({
         rsiBuyThreshold: z.number().optional(),

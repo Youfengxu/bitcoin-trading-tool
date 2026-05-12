@@ -4,24 +4,48 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Loader2, Cpu, Save, Brain, MessageSquare } from "lucide-react";
+import { Loader2, Cpu, Save, Brain, MessageSquare, Clock, Info, Zap, ZapOff } from "lucide-react";
 import { useState, useEffect, useMemo } from "react";
 import { toast } from "sonner";
 import { Streamdown } from "streamdown";
+import {
+  Tooltip as UITooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+
+const SCHEDULE_OPTIONS = [
+  { minutes: 0,   label: "OFF",   description: "Automation disabled — manual only" },
+  { minutes: 5,   label: "5 min", description: "Very high frequency — reactive, noisy" },
+  { minutes: 15,  label: "15 min",description: "High frequency — suitable for 1M–15M candles" },
+  { minutes: 30,  label: "30 min",description: "Medium frequency" },
+  { minutes: 60,  label: "1 hr",  description: "Default — balanced for 1H candles" },
+  { minutes: 240, label: "4 hr",  description: "Low frequency — suitable for 4H candles" },
+  { minutes: 720, label: "12 hr", description: "Macro — suitable for 1D candles" },
+];
+
+const INTERVAL_LABELS: Record<string, string> = {
+  "1m": "1M", "5m": "5M", "15m": "15M", "1h": "1H", "4h": "4H", "1d": "1D",
+};
 
 export default function Strategy() {
+  const utils = trpc.useUtils();
   const { data: active, isLoading, refetch } = trpc.strategy.active.useQuery(undefined, { refetchInterval: 60000 });
   const { data: versions } = trpc.strategy.versions.useQuery();
 
   const [params, setParams] = useState<Record<string, number>>({});
   const [aiQuestion, setAiQuestion] = useState("");
   const [aiResponse, setAiResponse] = useState<string | null>(null);
+  const [scheduleSaving, setScheduleSaving] = useState(false);
 
   useEffect(() => {
     if (active?.params) {
       setParams(active.params as unknown as Record<string, number>);
     }
   }, [active]);
+
+  const currentScheduleMinutes = active?.heartbeatScheduleMinutes ?? 60;
+  const currentInterval = active?.candleInterval ?? "1h";
 
   const optimizeMutation = trpc.strategy.optimize.useMutation({
     onSuccess: (data) => {
@@ -39,10 +63,39 @@ export default function Strategy() {
     onError: (err) => toast.error(err.message),
   });
 
+  const updateSettings = trpc.strategy.updateSettings.useMutation({
+    onSuccess: (data) => {
+      utils.strategy.active.invalidate();
+      const opt = SCHEDULE_OPTIONS.find((o) => o.minutes === data.heartbeatScheduleMinutes);
+      if (data.heartbeatScheduleMinutes === 0) {
+        toast.success("Automation turned OFF", {
+          description: "The signal engine will only run when you press Generate Signal manually.",
+          duration: 5000,
+        });
+      } else {
+        toast.success(`Heartbeat schedule set to ${opt?.label ?? data.heartbeatScheduleMinutes + " min"}`, {
+          description: "The signal engine will now fire automatically at this interval. Signal frequency is independent of the candle interval.",
+          duration: 5000,
+        });
+      }
+      setScheduleSaving(false);
+    },
+    onError: (err) => {
+      toast.error("Failed to save schedule: " + err.message);
+      setScheduleSaving(false);
+    },
+  });
+
   const aiMutation = trpc.ai.analyze.useMutation({
     onSuccess: (data) => setAiResponse(data.analysis),
     onError: (err) => toast.error(err.message),
   });
+
+  const handleScheduleChange = (minutes: number) => {
+    if (minutes === currentScheduleMinutes || scheduleSaving) return;
+    setScheduleSaving(true);
+    updateSettings.mutate({ heartbeatScheduleMinutes: minutes });
+  };
 
   const paramFields = useMemo(() => [
     { key: "rsiBuyThreshold", label: "RSI Buy Threshold", min: 10, max: 50, step: 1 },
@@ -69,13 +122,13 @@ export default function Strategy() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
           <h1 className="font-hud text-2xl font-bold tracking-wider neon-glow-cyan text-[oklch(0.82_0.18_195)]">
             STRATEGY
           </h1>
           <p className="text-muted-foreground text-sm mt-1 font-mono-tech">
-            Parameter tuning &middot; Walk-forward optimization
+            Parameter tuning &middot; Walk-forward optimization &middot; Automation
           </p>
         </div>
         <div className="flex gap-2">
@@ -107,7 +160,131 @@ export default function Strategy() {
         <span className="text-xs font-mono-tech text-muted-foreground">
           {active?.isActive ? "Active" : "Default parameters"}
         </span>
+        <span className="text-xs font-mono-tech text-muted-foreground">
+          &middot; Signal Interval: <span className="text-[oklch(0.82_0.18_195)]">{INTERVAL_LABELS[currentInterval] ?? currentInterval}</span>
+          &nbsp;(change on Live Price page)
+        </span>
       </div>
+
+      {/* ── Automation Section ──────────────────────────────────────────── */}
+      <Card className="hud-panel relative hud-corner border-border">
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <CardTitle className="font-hud text-sm tracking-wider text-[oklch(0.82_0.18_195)]">
+              AUTOMATION
+            </CardTitle>
+            <UITooltip>
+              <TooltipTrigger asChild>
+                <Info className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
+              </TooltipTrigger>
+              <TooltipContent
+                side="right"
+                className="max-w-[300px] text-xs font-mono-tech bg-card border-border text-foreground"
+              >
+                <p className="font-semibold text-[oklch(0.82_0.18_195)] mb-1">Heartbeat Schedule</p>
+                <p>
+                  Controls how often the signal engine fires automatically — fetching the latest
+                  candles, computing metrics, generating a signal, and executing a simulator trade
+                  if the signal is BUY or SELL.
+                </p>
+                <p className="mt-1.5 text-muted-foreground">
+                  This is independent of the Signal Interval (candle timeframe). You can run a 15M
+                  candle strategy every 15 minutes, or a 1H candle strategy every hour.
+                </p>
+                <p className="mt-1.5 border-t border-border pt-1.5 text-[oklch(0.82_0.22_145)]">
+                  Tip: Match the schedule to the candle interval for best results. E.g. 1H candles
+                  → 1 hr schedule.
+                </p>
+              </TooltipContent>
+            </UITooltip>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label className="text-xs font-mono-tech text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
+              <Clock className="h-3.5 w-3.5" />
+              Heartbeat Schedule
+              <span className="text-muted-foreground font-normal normal-case tracking-normal">
+                — how often the signal engine runs automatically
+              </span>
+            </Label>
+            <div className="flex flex-wrap gap-2">
+              {SCHEDULE_OPTIONS.map((opt) => {
+                const isActive = currentScheduleMinutes === opt.minutes;
+                const isOff = opt.minutes === 0;
+                return (
+                  <UITooltip key={opt.minutes}>
+                    <TooltipTrigger asChild>
+                      <button
+                        onClick={() => handleScheduleChange(opt.minutes)}
+                        disabled={scheduleSaving}
+                        className={`px-4 py-2 text-xs font-mono-tech rounded border transition-all flex items-center gap-1.5 disabled:opacity-50 ${
+                          isActive
+                            ? isOff
+                              ? "border-destructive bg-destructive/10 text-destructive"
+                              : "border-[oklch(0.82_0.22_145)] bg-[oklch(0.82_0.22_145)]/10 text-[oklch(0.82_0.22_145)]"
+                            : "border-border text-muted-foreground hover:border-primary/50"
+                        }`}
+                      >
+                        {scheduleSaving && isActive ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : isOff ? (
+                          <ZapOff className="h-3 w-3" />
+                        ) : (
+                          <Zap className="h-3 w-3" />
+                        )}
+                        {opt.label}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent
+                      side="bottom"
+                      className="text-xs font-mono-tech bg-card border-border text-foreground"
+                    >
+                      {opt.description}
+                    </TooltipContent>
+                  </UITooltip>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Status summary */}
+          <div className={`rounded-lg border px-4 py-3 text-xs font-mono-tech flex items-start gap-3 ${
+            currentScheduleMinutes === 0
+              ? "border-destructive/30 bg-destructive/5 text-destructive"
+              : "border-[oklch(0.82_0.22_145)]/30 bg-[oklch(0.82_0.22_145)]/5 text-[oklch(0.82_0.22_145)]"
+          }`}>
+            {currentScheduleMinutes === 0 ? (
+              <ZapOff className="h-4 w-4 mt-0.5 shrink-0" />
+            ) : (
+              <Zap className="h-4 w-4 mt-0.5 shrink-0" />
+            )}
+            <div>
+              {currentScheduleMinutes === 0 ? (
+                <>
+                  <p className="font-semibold">Automation is OFF</p>
+                  <p className="text-muted-foreground mt-0.5">
+                    The signal engine will only run when you press the Generate Signal button manually.
+                    No automatic trades will be executed.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="font-semibold">
+                    Running every {SCHEDULE_OPTIONS.find((o) => o.minutes === currentScheduleMinutes)?.label ?? currentScheduleMinutes + " min"}
+                    {" "}on {INTERVAL_LABELS[currentInterval] ?? currentInterval} candles
+                  </p>
+                  <p className="text-muted-foreground mt-0.5">
+                    Each run fetches the latest {INTERVAL_LABELS[currentInterval] ?? currentInterval} candles, computes all metrics, and generates a
+                    signal. BUY/SELL signals execute a simulator trade and send a Telegram notification.
+                    HOLD signals are logged but do not trade.
+                  </p>
+                </>
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Parameter Grid */}
       <Card className="hud-panel relative hud-corner border-border">

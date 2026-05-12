@@ -1,12 +1,21 @@
 import { trpc } from "@/lib/trpc";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Loader2 } from "lucide-react";
+import { Loader2, Info } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, ReferenceLine,
 } from "recharts";
 import { useMemo } from "react";
+import {
+  Tooltip as UITooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+
+const INTERVAL_LABELS: Record<string, string> = {
+  "1m": "1M", "5m": "5M", "15m": "15M", "1h": "1H", "4h": "4H", "1d": "1D",
+};
 
 function MetricGauge({ label, value, min, max, unit, color }: {
   label: string; value: number | undefined; min: number; max: number; unit?: string; color: string;
@@ -27,7 +36,15 @@ function MetricGauge({ label, value, min, max, unit, color }: {
 }
 
 export default function Metrics() {
-  const { data: metrics, isLoading } = trpc.metrics.current.useQuery(undefined, { refetchInterval: 60000 });
+  // Read the persisted candle interval from the active strategy so this page
+  // stays in sync with the Signal Interval toggle on the Live Price page.
+  const { data: activeStrategy } = trpc.strategy.active.useQuery(undefined, { refetchInterval: 30000 });
+  const candleInterval = activeStrategy?.candleInterval ?? "1h";
+
+  const { data: metrics, isLoading } = trpc.metrics.current.useQuery(
+    { interval: candleInterval },
+    { refetchInterval: 60000 }
+  );
   const { data: snapshots } = trpc.metrics.history.useQuery({ limit: 50 }, { refetchInterval: 60000 });
 
   const historyData = useMemo(() => {
@@ -57,13 +74,39 @@ export default function Metrics() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="font-hud text-2xl font-bold tracking-wider neon-glow-cyan text-[oklch(0.82_0.18_195)]">
-          METRICS
-        </h1>
-        <p className="text-muted-foreground text-sm mt-1 font-mono-tech">
-          Technical indicators &middot; Statistical analysis
-        </p>
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="font-hud text-2xl font-bold tracking-wider neon-glow-cyan text-[oklch(0.82_0.18_195)]">
+            METRICS
+          </h1>
+          <p className="text-muted-foreground text-sm mt-1 font-mono-tech">
+            Technical indicators &middot; Statistical analysis
+          </p>
+        </div>
+        {/* Show the active candle interval — synced from the Live Price page */}
+        <UITooltip>
+          <TooltipTrigger asChild>
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-[oklch(0.82_0.18_195)]/30 bg-[oklch(0.82_0.18_195)]/5 cursor-default">
+              <span className="text-xs font-mono-tech text-[oklch(0.82_0.18_195)]">
+                Interval: {INTERVAL_LABELS[candleInterval] ?? candleInterval}
+              </span>
+              <Info className="h-3 w-3 text-muted-foreground" />
+            </div>
+          </TooltipTrigger>
+          <TooltipContent
+            side="left"
+            className="max-w-[260px] text-xs font-mono-tech bg-card border-border text-foreground"
+          >
+            <p className="font-semibold text-[oklch(0.82_0.18_195)] mb-1">Synced from Live Price</p>
+            <p>
+              All metrics on this page are computed on <strong>{INTERVAL_LABELS[candleInterval] ?? candleInterval}</strong> candles,
+              matching the Signal Interval selected on the Live Price page.
+            </p>
+            <p className="mt-1 text-muted-foreground">
+              Change the interval on the Live Price page to update metrics here.
+            </p>
+          </TooltipContent>
+        </UITooltip>
       </div>
 
       {/* Current Metrics Overview */}

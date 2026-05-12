@@ -18,28 +18,51 @@ import * as db from "./db";
 
 let lastOptimizeHour = -1;
 let lastWeeklyReportDay = -1;
+/** Timestamp (ms) of the last successful signal generation run. Used for schedule throttle. */
+let lastSignalRunTs = 0;
 
 export async function handleHeartbeat() {
   const now = new Date();
   const currentHour = now.getUTCHours();
   const currentDay = now.getUTCDay();
+  const nowMs = now.getTime();
 
   console.log(`[Heartbeat] Running at ${now.toISOString()}`);
 
   try {
-    // 1. Generate signal and execute trade every heartbeat
-    await runSignalGeneration();
+    // Read the active strategy settings to get the user-configured schedule throttle.
+    const activeStrategy = await db.getActiveStrategyParams();
+    const heartbeatScheduleMinutes = activeStrategy?.heartbeatScheduleMinutes ?? 60;
+    const candleInterval = activeStrategy?.candleInterval ?? "1h";
 
-    // 2. Validate pending signals
+    // 1. Generate signal and execute trade — gated by the user-configured schedule throttle.
+    //    heartbeatScheduleMinutes === 0 means automation is OFF; skip signal generation only.
+    const signalThrottled =
+      heartbeatScheduleMinutes === 0 ||
+      (lastSignalRunTs > 0 && (nowMs - lastSignalRunTs) / 60000 < heartbeatScheduleMinutes);
+
+    if (signalThrottled) {
+      if (heartbeatScheduleMinutes === 0) {
+        console.log("[Heartbeat] Signal generation skipped — automation is OFF.");
+      } else {
+        const elapsed = ((nowMs - lastSignalRunTs) / 60000).toFixed(1);
+        console.log(`[Heartbeat] Signal throttled — ${elapsed}m elapsed, schedule requires ${heartbeatScheduleMinutes}m.`);
+      }
+    } else {
+      await runSignalGeneration(candleInterval);
+      lastSignalRunTs = nowMs;
+    }
+
+    // 2. Validate pending signals — always runs regardless of schedule setting.
     await runSignalValidation();
 
-    // 3. Run optimization once per day at hour 0
+    // 3. Run optimization once per day at hour 0 — always runs regardless of schedule setting.
     if (currentHour === 0 && lastOptimizeHour !== currentHour) {
       lastOptimizeHour = currentHour;
       await runOptimization();
     }
 
-    // 4. Generate weekly report on Sundays
+    // 4. Generate weekly report on Sundays — always runs regardless of schedule setting.
     if (currentDay === 0 && lastWeeklyReportDay !== currentDay) {
       lastWeeklyReportDay = currentDay;
       await generateWeeklyReport();
@@ -49,9 +72,10 @@ export async function handleHeartbeat() {
   }
 }
 
-async function runSignalGeneration() {
+async function runSignalGeneration(candleInterval = "1h") {
   try {
-    const candles = await fetchCandles("1h", 250);
+    console.log(`[Heartbeat] Fetching candles with interval: ${candleInterval}`);
+    const candles = await fetchCandles(candleInterval, 250);
     const candleData: CandleData[] = candles.map((c) => ({
       open: c.open, high: c.high, low: c.low,
       close: c.close, volume: c.volume, openTime: c.openTime,
