@@ -11,7 +11,8 @@ A professional, full-stack Bitcoin trading intelligence dashboard with real-time
 | **Live Price Feed** | Real-time BTC/USDT price via Kraken (primary), CoinGecko (secondary), Yahoo Finance (tertiary) |
 | **Technical Metrics** | RSI, MACD, Bollinger Bands, EMA 12/26, SMA 50/200, Volume Ratio |
 | **Statistical Significance** | Z-score engine classifies each price move as a meaningful **trend** or a noise **blip** |
-| **Signal Generator** | Combines 6 indicator layers into a buy/sell/hold verdict with full component-by-component reasoning |
+| **Change Detection** | CUSUM changepoint alarm, Hurst Exponent regime classifier (trending / random walk / mean-reverting), Wilder ADX trend-strength filter |
+| **Signal Generator** | Combines 8 indicator layers into a buy/sell/hold verdict with Hurst regime weighting and CUSUM confidence boost |
 | **Self-Learning Optimizer** | Walk-forward backtest runs weekly, selects parameters that maximise weekly returns |
 | **Signal Validation** | Tracks predicted vs actual outcomes; reports win rate, Sharpe ratio, and max drawdown |
 | **Paper Trading Simulator** | Starts with $10,000 USD seed, executes signals automatically, tracks portfolio over time |
@@ -38,8 +39,8 @@ A professional, full-stack Bitcoin trading intelligence dashboard with real-time
 ```
 server/
   engine/
-    technicalAnalysis.ts   ← RSI, MACD, BB, EMA/SMA, Z-score, volume
-    signalGenerator.ts     ← 6-layer signal aggregation with reasoning
+    technicalAnalysis.ts   ← RSI, MACD, BB, EMA/SMA, Z-score, CUSUM, Hurst, ADX
+    signalGenerator.ts     ← 8-layer signal aggregation with Hurst weighting and CUSUM boost
     walkForwardOptimizer.ts← Self-learning parameter optimization
     marketData.ts          ← Kraken / CoinGecko / Yahoo Finance data layer
   heartbeatHandler.ts      ← Scheduled signal generation, validation, optimization
@@ -62,7 +63,7 @@ shared/tradingTypes.ts     ← Shared strategy parameter types
 
 ## Signal Methodology
 
-Each signal passes through six analytical layers:
+Each signal passes through eight analytical layers:
 
 1. **RSI** — oversold/overbought thresholds (default: buy < 35, sell > 65)
 2. **MACD Histogram** — bullish/bearish momentum crossover
@@ -70,8 +71,12 @@ Each signal passes through six analytical layers:
 4. **EMA Crossover** — EMA12 vs EMA26 directional alignment
 5. **Z-Score Trend Filter** — only acts on moves ≥ 2.0 standard deviations from the 20-period rolling mean; suppresses signals on noise (|Z| ≤ 0.5)
 6. **Volume Confirmation** — applies a 1.15× multiplier when volume exceeds 1.5× the 20-period average
+7. **ADX (Wilder)** — adds a directional component only when ADX > 25 (strong trend); +DI > -DI = bullish bias
+8. **CUSUM Boost** — applies a 1.2× multiplier to the winning side when a cumulative-sum changepoint alarm is active and aligns with the signal direction
 
-Each layer produces a directional vote and a strength score (0–1). Scores are aggregated and normalized; a signal is only emitted when the winning side exceeds the minimum confidence threshold (default 55%).
+**Hurst regime weighting** is applied across all components before aggregation: trend-following components (MACD, EMA, Z-Score, ADX) are scaled up when H > 0.5 (persistent/trending regime) and scaled down when H < 0.5; mean-reversion components (RSI, Bollinger Bands) receive the inverse weighting.
+
+A signal is emitted when the weighted, volume-boosted, CUSUM-adjusted winning score exceeds the minimum confidence threshold (default 55%).
 
 ---
 
@@ -119,6 +124,20 @@ The platform uses a heartbeat endpoint (`POST /api/heartbeat`) for recurring aut
 | Walk-forward optimization | Weekly | Backtest parameter grid on last 1,000 candles → save best-performing strategy version |
 
 Configure the heartbeat schedule from the Manus project Settings → Schedules panel after publishing.
+
+---
+
+## Work in Progress
+
+### BOCPD — Bayesian Online Changepoint Detection
+
+[Adams & MacKay, 2007] A fully probabilistic alternative to CUSUM. Rather than a fixed threshold, BOCPD maintains a posterior distribution over the *run length* (time since the last changepoint) using a Gaussian conjugate prior on the local mean. At each step it computes the probability that a changepoint just occurred vs. the sequence continuing. This gives:
+
+- Calibrated changepoint probabilities instead of a binary alarm
+- Automatic sensitivity adjustment as volatility changes (no hand-tuned `k`/`h` parameters)
+- Richer signal: the posterior hazard function can differentiate structural breaks from transient shocks
+
+**Planned integration**: Replace the binary `cusumAlarm` flag with a continuous `bocpdChangeProb` score (0–1). The CUSUM boost in the signal generator would become `1 + bocpdChangeProb * 0.4` (smooth scaling). Current blockers: numerical stability of the log-sum-exp recursion at long run lengths; deciding between Gaussian and Student-t observation model.
 
 ---
 

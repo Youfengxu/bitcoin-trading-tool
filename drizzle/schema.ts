@@ -62,6 +62,14 @@ export const metricSnapshots = mysqlTable("metric_snapshots", {
   zScore: double("zScore"),
   rollingStdDev: double("rollingStdDev"),
   trendClassification: mysqlEnum("trendClassification", ["trend", "blip", "neutral"]),
+  // Change-detection indicators
+  cusumAlarm: boolean("cusumAlarm"),
+  cusumUp: double("cusumUp"),
+  cusumDown: double("cusumDown"),
+  hurstExponent: double("hurstExponent"),
+  adx: double("adx"),
+  adxPlus: double("adxPlus"),
+  adxMinus: double("adxMinus"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 

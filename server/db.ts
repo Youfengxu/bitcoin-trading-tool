@@ -116,6 +116,8 @@ export async function insertMetricSnapshot(snapshot: {
   sma50?: number | null; sma200?: number | null; volumeSma20?: number | null;
   volumeRatio?: number | null; zScore?: number | null; rollingStdDev?: number | null;
   trendClassification?: "trend" | "blip" | "neutral" | null;
+  cusumAlarm?: boolean | null; cusumUp?: number | null; cusumDown?: number | null;
+  hurstExponent?: number | null; adx?: number | null; adxPlus?: number | null; adxMinus?: number | null;
 }) {
   const db = await getDb();
   if (!db) return;

@@ -162,18 +162,52 @@ export function generateSignal(
     }
   }
 
-  // Aggregate signals
+  // 7. ADX — trend strength and direction
+  if (metrics.adx !== null && metrics.adxPlus !== null && metrics.adxMinus !== null) {
+    if (metrics.adx > 25) {
+      const strength = Math.min(1, (metrics.adx - 25) / 50);
+      const dir = metrics.adxPlus > metrics.adxMinus ? "buy" : "sell";
+      components.push({
+        name: "ADX",
+        direction: dir,
+        strength,
+        reason: `ADX ${metrics.adx.toFixed(1)} confirms strong trend; +DI ${metrics.adxPlus.toFixed(1)} vs -DI ${metrics.adxMinus.toFixed(1)} favors ${dir}`,
+      });
+    } else {
+      components.push({
+        name: "ADX",
+        direction: "neutral",
+        strength: 0,
+        reason: `ADX ${metrics.adx.toFixed(1)} below 25 — no strong trend confirmed`,
+      });
+    }
+  }
+
+  // Aggregate signals with Hurst-aware regime weighting.
+  // Trend-following components (MACD, EMA, Z-Score, ADX) are amplified when H > 0.5.
+  // Mean-reversion components (RSI, Bollinger Bands) are amplified when H < 0.5.
+  const trendFollowing = new Set(["MACD", "EMA Crossover", "Z-Score Trend", "ADX"]);
+  const meanReverting = new Set(["RSI", "Bollinger Bands"]);
+  const h = metrics.hurstExponent ?? 0.5;
+  const trendMult = Math.max(0.1, 1 + (h - 0.5) * 2);
+  const mrMult = Math.max(0.1, 1 + (0.5 - h) * 2);
+
   let buyScore = 0;
   let sellScore = 0;
   let buyCount = 0;
   let sellCount = 0;
 
   for (const comp of components) {
+    let mult = 1.0;
+    if (metrics.hurstExponent !== null) {
+      if (trendFollowing.has(comp.name)) mult = trendMult;
+      else if (meanReverting.has(comp.name)) mult = mrMult;
+    }
     if (comp.direction === "buy") {
-      buyScore += comp.strength;
+      buyScore += comp.strength * mult;
       buyCount++;
     } else if (comp.direction === "sell") {
-      sellScore += comp.strength;
+      sellScore += comp.strength * mult;
       sellCount++;
     }
   }
@@ -185,8 +219,14 @@ export function generateSignal(
   // Volume boost
   const volumeMultiplier = volumeConfirmed ? 1.15 : 1.0;
 
-  const finalBuy = normalizedBuy * volumeMultiplier;
-  const finalSell = normalizedSell * volumeMultiplier;
+  let finalBuy = normalizedBuy * volumeMultiplier;
+  let finalSell = normalizedSell * volumeMultiplier;
+
+  // CUSUM boost: an active changepoint alarm in the prevailing direction adds 20% confidence.
+  if (metrics.cusumAlarm && metrics.cusumUp !== null && metrics.cusumDown !== null) {
+    if (metrics.cusumUp > metrics.cusumDown && finalBuy >= finalSell) finalBuy *= 1.2;
+    else if (metrics.cusumDown >= metrics.cusumUp && finalSell > finalBuy) finalSell *= 1.2;
+  }
 
   // Determine signal
   let signal: "buy" | "sell" | "hold" = "hold";
@@ -208,10 +248,15 @@ export function generateSignal(
     (c) => `[${c.name}] ${c.reason} (${c.direction}, strength: ${(c.strength * 100).toFixed(0)}%)`
   );
 
+  const hurstLabel = metrics.hurstExponent !== null
+    ? ` | Hurst ${metrics.hurstExponent.toFixed(2)} (${metrics.hurstExponent > 0.6 ? "trending" : metrics.hurstExponent < 0.45 ? "mean-reverting" : "random walk"})`
+    : "";
+  const cusumLabel = metrics.cusumAlarm ? " | CUSUM alarm active" : "";
+
   const summary =
     signal === "hold"
-      ? `HOLD: No clear directional consensus. Buy score: ${(finalBuy * 100).toFixed(0)}%, Sell score: ${(finalSell * 100).toFixed(0)}%. Minimum confidence threshold: ${(params.minConfidence * 100).toFixed(0)}%.`
-      : `${signal.toUpperCase()}: Combined ${signal} score ${((signal === "buy" ? finalBuy : finalSell) * 100).toFixed(0)}% exceeds minimum confidence of ${(params.minConfidence * 100).toFixed(0)}%.`;
+      ? `HOLD: No clear directional consensus. Buy score: ${(finalBuy * 100).toFixed(0)}%, Sell score: ${(finalSell * 100).toFixed(0)}%. Minimum confidence threshold: ${(params.minConfidence * 100).toFixed(0)}%.${hurstLabel}${cusumLabel}`
+      : `${signal.toUpperCase()}: Combined ${signal} score ${((signal === "buy" ? finalBuy : finalSell) * 100).toFixed(0)}% exceeds minimum confidence of ${(params.minConfidence * 100).toFixed(0)}%.${hurstLabel}${cusumLabel}`;
 
   const reasoning = [summary, "", "Component Analysis:", ...reasoningParts].join("\n");
 
