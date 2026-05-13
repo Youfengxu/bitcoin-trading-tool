@@ -14,7 +14,22 @@ import {
 import { computeAllMetrics, type CandleData } from "./engine/technicalAnalysis";
 import { generateSignal } from "./engine/signalGenerator";
 import { walkForwardOptimize } from "./engine/walkForwardOptimizer";
-import { DEFAULT_STRATEGY_PARAMS, type StrategyParameters, getCandleLimit, getConfidenceMultiplier } from "../shared/tradingTypes";
+import {
+  computeReward,
+  buildVariantPairs,
+  evaluatePromotion,
+  type ResolvedSignal,
+} from "./engine/championChallenger";
+import {
+  DEFAULT_STRATEGY_PARAMS,
+  type StrategyParameters,
+  getCandleLimit,
+  getConfidenceMultiplier,
+  deriveChallengerParams,
+  OPPORTUNITY_COST_LAMBDA,
+  CHALLENGER_PROMOTION_MIN_N,
+  CHALLENGER_PROMOTION_PVALUE,
+} from "../shared/tradingTypes";
 import * as db from "./db";
 
 export const appRouter = router({
@@ -443,6 +458,145 @@ export const appRouter = router({
         });
         return { version: currentVersion + 1, params: merged };
       }),
+  }),
+
+  // ─── Champion-Challenger Inspection ──────────────────────────────────
+  championChallenger: router({
+    /**
+     * One-shot snapshot of the current state of the learning loop:
+     *   - active champion params + age
+     *   - per-variant signal distribution & cumulative reward
+     *   - paired t-test stats vs champion + promotion gate status
+     *   - chronological cumulative-reward time series for charting
+     *   - recent promotion history
+     */
+    status: publicProcedure.query(async () => {
+      const active = await db.getActiveStrategyParams();
+      const championEpoch = active?.createdAt
+        ? (active.createdAt instanceof Date ? active.createdAt.getTime() : Number(active.createdAt))
+        : 0;
+      const championParams = (active?.params as StrategyParameters) ?? DEFAULT_STRATEGY_PARAMS;
+
+      const resolved = await db.getResolvedSignalsSince(championEpoch, 5000);
+      const resolvedShaped: ResolvedSignal[] = resolved
+        .filter((s): s is typeof s & { signal: "buy" | "sell" | "hold" } =>
+          s.signal === "buy" || s.signal === "sell" || s.signal === "hold"
+        )
+        .map((s) => ({
+          ts: s.ts,
+          signal: s.signal,
+          price: s.price,
+          outcomePrice: s.outcomePrice,
+          strategyVariant: s.strategyVariant,
+        }));
+
+      // Per-variant aggregates
+      function aggregateVariant(variantName: "champion" | "aggressive" | "conservative") {
+        const variantSignals = resolvedShaped.filter((s) => s.strategyVariant === variantName);
+        const counts = { buy: 0, sell: 0, hold: 0 };
+        let cumulativeReward = 0;
+        let acted = 0;
+        let actedWins = 0;
+        let holdCorrect = 0;
+        let holdMissed = 0;
+        for (const s of variantSignals) {
+          counts[s.signal]++;
+          if (s.outcomePrice == null) continue;
+          cumulativeReward += computeReward(s.signal, s.price, s.outcomePrice, OPPORTUNITY_COST_LAMBDA);
+          if (s.signal !== "hold") {
+            acted++;
+            const correctBuy = s.signal === "buy" && s.outcomePrice > s.price;
+            const correctSell = s.signal === "sell" && s.outcomePrice < s.price;
+            if (correctBuy || correctSell) actedWins++;
+          } else {
+            const absMove = Math.abs(s.outcomePrice - s.price) / s.price;
+            if (absMove > 0.005) holdMissed++;
+            else holdCorrect++;
+          }
+        }
+        return {
+          totalSignals: variantSignals.length,
+          counts,
+          cumulativeReward,
+          actedWinRate: acted > 0 ? actedWins / acted : null,
+          holdCorrect,
+          holdMissed,
+        };
+      }
+
+      const champion = aggregateVariant("champion");
+      const aggregates = {
+        aggressive: aggregateVariant("aggressive"),
+        conservative: aggregateVariant("conservative"),
+      };
+
+      // Paired t-test + promotion gating
+      const aggressiveEval = evaluatePromotion(resolvedShaped, "aggressive", championEpoch);
+      const conservativeEval = evaluatePromotion(resolvedShaped, "conservative", championEpoch);
+
+      // Cumulative reward series (chronological), one point per shared ts
+      const aggPairs = buildVariantPairs(resolvedShaped, "aggressive", OPPORTUNITY_COST_LAMBDA);
+      const consPairs = buildVariantPairs(resolvedShaped, "conservative", OPPORTUNITY_COST_LAMBDA);
+      // Build a unified series keyed by ts (champion column shared between both pair sets)
+      const tsSet = new Set<number>();
+      aggPairs.forEach((p) => tsSet.add(p.ts));
+      consPairs.forEach((p) => tsSet.add(p.ts));
+      const tsList = Array.from(tsSet).sort((a, b) => a - b);
+      const aggMap = new Map(aggPairs.map((p) => [p.ts, p]));
+      const consMap = new Map(consPairs.map((p) => [p.ts, p]));
+
+      let champCum = 0, aggCum = 0, consCum = 0;
+      const rewardSeries = tsList.map((ts) => {
+        const ap = aggMap.get(ts);
+        const cp = consMap.get(ts);
+        // Champion reward is the same whichever pair set we read it from
+        const champReward = ap?.championReward ?? cp?.championReward ?? 0;
+        champCum += champReward;
+        aggCum += ap?.challengerReward ?? 0;
+        consCum += cp?.challengerReward ?? 0;
+        return { ts, champion: champCum, aggressive: aggCum, conservative: consCum };
+      });
+
+      // Promotion history from strategy_params with auto-promote notes
+      const versions = await db.getAllStrategyVersions();
+      const promotionHistory = versions
+        .filter((v) => v.notes?.toLowerCase().includes("auto-promote"))
+        .slice(0, 20)
+        .map((v) => ({
+          version: v.version,
+          ts: v.createdAt instanceof Date ? v.createdAt.getTime() : Number(v.createdAt),
+          notes: v.notes,
+        }));
+
+      const championAgeMs = championEpoch > 0 ? Date.now() - championEpoch : 0;
+
+      return {
+        champion: {
+          version: active?.version ?? 0,
+          params: championParams,
+          createdAt: championEpoch,
+          ageMs: championAgeMs,
+          aggregates: champion,
+          aggressiveDerivedParams: deriveChallengerParams(championParams, "aggressive"),
+          conservativeDerivedParams: deriveChallengerParams(championParams, "conservative"),
+        },
+        aggressive: {
+          aggregates: aggregates.aggressive,
+          test: aggressiveEval,
+        },
+        conservative: {
+          aggregates: aggregates.conservative,
+          test: conservativeEval,
+        },
+        rewardSeries,
+        promotionHistory,
+        thresholds: {
+          minN: CHALLENGER_PROMOTION_MIN_N,
+          pValue: CHALLENGER_PROMOTION_PVALUE,
+          lambda: OPPORTUNITY_COST_LAMBDA,
+        },
+      };
+    }),
   }),
 
   // ─── AI Assistant ────────────────────────────────────────────────────

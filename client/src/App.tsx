@@ -11,6 +11,7 @@ import Signals from "./pages/Signals";
 import Simulator from "./pages/Simulator";
 import Performance from "./pages/Performance";
 import Strategy from "./pages/Strategy";
+import ChampionChallenger from "./pages/ChampionChallenger";
 import {
   Activity,
   BarChart3,
@@ -18,6 +19,7 @@ import {
   Wallet,
   TrendingUp,
   Settings2,
+  FlaskConical,
 } from "lucide-react";
 
 const navItems = [
@@ -26,6 +28,7 @@ const navItems = [
   { label: "Signals", href: "/signals", icon: Zap },
   { label: "Simulator", href: "/simulator", icon: Wallet },
   { label: "Performance", href: "/performance", icon: TrendingUp },
+  { label: "Champion-Challenger", href: "/champion-challenger", icon: FlaskConical },
   { label: "Strategy", href: "/strategy", icon: Settings2 },
 ];
 
@@ -38,6 +41,7 @@ function Router() {
         <Route path="/signals" component={Signals} />
         <Route path="/simulator" component={Simulator} />
         <Route path="/performance" component={Performance} />
+        <Route path="/champion-challenger" component={ChampionChallenger} />
         <Route path="/strategy" component={Strategy} />
         <Route path="/404" component={NotFound} />
         <Route component={NotFound} />

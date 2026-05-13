@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/sidebar";
 import { getLoginUrl } from "@/const";
 import { useIsMobile } from "@/hooks/useMobile";
-import { Activity, BarChart3, Zap, Wallet, TrendingUp, Settings2, LogOut, PanelLeft } from "lucide-react";
+import { Activity, BarChart3, Zap, Wallet, TrendingUp, Settings2, FlaskConical, LogOut, PanelLeft } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from './DashboardLayoutSkeleton';
@@ -33,6 +33,7 @@ const menuItems = [
   { icon: Zap, label: "Signals", path: "/signals" },
   { icon: Wallet, label: "Simulator", path: "/simulator" },
   { icon: TrendingUp, label: "Performance", path: "/performance" },
+  { icon: FlaskConical, label: "Champion-Challenger", path: "/champion-challenger" },
   { icon: Settings2, label: "Strategy", path: "/strategy" },
 ];
 
