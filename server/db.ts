@@ -262,7 +262,9 @@ export async function getActiveStrategyParams() {
     .orderBy(desc(strategyParams.version)).limit(1);
   if (result.length === 0) return null;
   const row = result[0]!;
-  if (typeof row.params === "string") row.params = JSON.parse(row.params as string);
+  let p: unknown = row.params;
+  while (typeof p === "string") p = JSON.parse(p);
+  row.params = p;
   return row;
 }
 
