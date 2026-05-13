@@ -14,7 +14,7 @@ import {
 import { computeAllMetrics, type CandleData } from "./engine/technicalAnalysis";
 import { generateSignal } from "./engine/signalGenerator";
 import { walkForwardOptimize } from "./engine/walkForwardOptimizer";
-import { DEFAULT_STRATEGY_PARAMS, type StrategyParameters } from "../shared/tradingTypes";
+import { DEFAULT_STRATEGY_PARAMS, type StrategyParameters, getCandleLimit, getConfidenceMultiplier } from "../shared/tradingTypes";
 import * as db from "./db";
 
 export const appRouter = router({
@@ -52,7 +52,8 @@ export const appRouter = router({
     current: publicProcedure
       .input(z.object({ interval: z.string().default("1h") }).optional())
       .query(async ({ input }) => {
-        const candles = await fetchCandles(input?.interval ?? "1h", 250);
+        const iv = input?.interval ?? "1h";
+        const candles = await fetchCandles(iv, getCandleLimit(iv));
         const candleData: CandleData[] = candles.map((c) => ({
           open: c.open, high: c.high, low: c.low,
           close: c.close, volume: c.volume, openTime: c.openTime,
@@ -71,15 +72,20 @@ export const appRouter = router({
   // ─── Signals ────────────────────────────────────────────────────────
   signals: router({
     generate: publicProcedure.mutation(async () => {
-      const candles = await fetchCandles("1h", 250);
+      const activeSettings = await db.getActiveStrategyParams();
+      const signalInterval = activeSettings?.candleInterval ?? "1h";
+      const candles = await fetchCandles(signalInterval, getCandleLimit(signalInterval));
       const candleData: CandleData[] = candles.map((c) => ({
         open: c.open, high: c.high, low: c.low,
         close: c.close, volume: c.volume, openTime: c.openTime,
       }));
-      const activeParams = await db.getActiveStrategyParams();
-      const params = activeParams
-        ? (activeParams.params as StrategyParameters)
+      const baseParams = activeSettings
+        ? (activeSettings.params as StrategyParameters)
         : DEFAULT_STRATEGY_PARAMS;
+      const params: StrategyParameters = {
+        ...baseParams,
+        minConfidence: Math.min(0.95, baseParams.minConfidence * getConfidenceMultiplier(signalInterval)),
+      };
       const metrics = computeAllMetrics(candleData, params.zScoreTrendThreshold, params.zScoreBlipThreshold);
       const signal = generateSignal(metrics, params);
       const ts = Date.now();
@@ -93,6 +99,7 @@ export const appRouter = router({
         portfolioValue: simState?.totalValueUsd,
       });
 
+      // Manual generate always acts immediately (no confirmation buffer).
       if (signal.signal !== "hold") {
         await executeSimulatorTrade(signal.signal, metrics.price, signal.reasoning, signalId ?? undefined);
         const updatedSimState = await db.getSimulatorState();
@@ -298,7 +305,7 @@ export const appRouter = router({
     }),
     updateSettings: publicProcedure
       .input(z.object({
-        candleInterval: z.enum(["1m", "5m", "15m", "1h", "4h", "1d"]).optional(),
+        candleInterval: z.enum(["5m", "15m", "30m", "1h", "4h", "1d"]).optional(),
         heartbeatScheduleMinutes: z.number().int().min(0).max(720).optional(),
         sessionToken: z.string().optional(),
       }))

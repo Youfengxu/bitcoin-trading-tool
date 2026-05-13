@@ -25,7 +25,7 @@ const SCHEDULE_OPTIONS = [
 ];
 
 const INTERVAL_LABELS: Record<string, string> = {
-  "1m": "1M", "5m": "5M", "15m": "15M", "1h": "1H", "4h": "4H", "1d": "1D",
+  "5m": "5M", "15m": "15M", "30m": "30M", "1h": "1H", "4h": "4H", "1d": "1D",
 };
 
 export default function Strategy() {

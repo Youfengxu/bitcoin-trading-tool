@@ -14,9 +14,9 @@ import {
 } from "@/components/ui/tooltip";
 
 const INTERVALS = [
-  { value: "1m",  label: "1M" },
   { value: "5m",  label: "5M" },
   { value: "15m", label: "15M" },
+  { value: "30m", label: "30M" },
   { value: "1h",  label: "1H" },
   { value: "4h",  label: "4H" },
   { value: "1d",  label: "1D" },
@@ -60,7 +60,7 @@ export default function LivePrice() {
     if (iv === interval || intervalSaving) return;
     setIntervalState(iv);
     setIntervalSaving(true);
-    updateSettings.mutate({ candleInterval: iv as "1m" | "5m" | "15m" | "1h" | "4h" | "1d" });
+    updateSettings.mutate({ candleInterval: iv as "5m" | "15m" | "30m" | "1h" | "4h" | "1d" });
   };
 
   const { data: price, isLoading: priceLoading } = trpc.market.currentPrice.useQuery(
@@ -112,7 +112,7 @@ export default function LivePrice() {
                   Bands, Z-score) and signal conviction per run.
                 </p>
                 <p className="mt-1.5 text-muted-foreground">
-                  Shorter intervals (1M, 5M) are more reactive but noisier. Longer intervals (4H,
+                  Shorter intervals (5M, 15M) are more reactive but noisier. Longer intervals (4H,
                   1D) produce fewer, higher-conviction signals.
                 </p>
                 <p className="mt-1.5 border-t border-border pt-1.5 text-[oklch(0.82_0.22_145)]">

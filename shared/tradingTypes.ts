@@ -1,3 +1,41 @@
+/** Supported candle intervals (1m excluded — incompatible with this indicator set). */
+export const SUPPORTED_INTERVALS = ["5m", "15m", "30m", "1h", "4h", "1d"] as const;
+export type CandleInterval = (typeof SUPPORTED_INTERVALS)[number];
+
+const INTERVAL_MINUTES: Record<CandleInterval, number> = {
+  "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440,
+};
+
+/**
+ * Returns the number of candles needed to cover SCOPE_DAYS of real-world history,
+ * capped at MAX_CANDLES and floored at MIN_CANDLES (SMA-200 minimum + buffer).
+ *
+ * Using duration-based scope means indicators always reflect the same real-world
+ * time window regardless of the candle interval chosen.
+ */
+const SCOPE_DAYS = 14;
+const MIN_CANDLES = 250;
+const MAX_CANDLES = 2000;
+
+export function getCandleLimit(interval: string): number {
+  const minutes = INTERVAL_MINUTES[interval as CandleInterval] ?? 60;
+  const needed = Math.ceil((SCOPE_DAYS * 24 * 60) / minutes);
+  return Math.min(MAX_CANDLES, Math.max(MIN_CANDLES, needed));
+}
+
+/**
+ * Scales minConfidence upward for sub-hourly intervals to compensate for
+ * higher indicator noise at shorter timeframes.
+ */
+export function getConfidenceMultiplier(interval: string): number {
+  switch (interval as CandleInterval) {
+    case "5m":  return 1.5;
+    case "15m": return 1.2;
+    case "30m": return 1.1;
+    default:    return 1.0;
+  }
+}
+
 /** Default strategy parameters used by the signal generator and walk-forward optimizer */
 export interface StrategyParameters {
   // RSI thresholds

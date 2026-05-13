@@ -12,7 +12,12 @@ import {
 import { computeAllMetrics, type CandleData } from "./engine/technicalAnalysis";
 import { generateSignal } from "./engine/signalGenerator";
 import { walkForwardOptimize } from "./engine/walkForwardOptimizer";
-import { DEFAULT_STRATEGY_PARAMS, type StrategyParameters } from "../shared/tradingTypes";
+import {
+  DEFAULT_STRATEGY_PARAMS,
+  type StrategyParameters,
+  getCandleLimit,
+  getConfidenceMultiplier,
+} from "../shared/tradingTypes";
 import { notifyOwner } from "./_core/notification";
 import * as db from "./db";
 
@@ -20,6 +25,8 @@ let lastOptimizeHour = -1;
 let lastWeeklyReportDay = -1;
 /** Timestamp (ms) of the last successful signal generation run. Used for schedule throttle. */
 let lastSignalRunTs = 0;
+/** Rolling buffer of the last 2 non-hold signal directions for confirmation. */
+let signalConfirmationBuffer: Array<"buy" | "sell"> = [];
 
 export async function handleHeartbeat() {
   const now = new Date();
@@ -74,17 +81,25 @@ export async function handleHeartbeat() {
 
 async function runSignalGeneration(candleInterval = "1h") {
   try {
-    console.log(`[Heartbeat] Fetching candles with interval: ${candleInterval}`);
-    const candles = await fetchCandles(candleInterval, 250);
+    const limit = getCandleLimit(candleInterval);
+    console.log(`[Heartbeat] Fetching ${limit} candles (${candleInterval}, ~14d scope)`);
+    const candles = await fetchCandles(candleInterval, limit);
     const candleData: CandleData[] = candles.map((c) => ({
       open: c.open, high: c.high, low: c.low,
       close: c.close, volume: c.volume, openTime: c.openTime,
     }));
 
     const activeParams = await db.getActiveStrategyParams();
-    const params = activeParams
+    const baseParams = activeParams
       ? (activeParams.params as StrategyParameters)
       : DEFAULT_STRATEGY_PARAMS;
+
+    // Scale minConfidence upward for sub-hourly intervals to suppress noise.
+    const confidenceMultiplier = getConfidenceMultiplier(candleInterval);
+    const params: StrategyParameters = {
+      ...baseParams,
+      minConfidence: Math.min(0.95, baseParams.minConfidence * confidenceMultiplier),
+    };
 
     const metrics = computeAllMetrics(
       candleData,
@@ -106,7 +121,22 @@ async function runSignalGeneration(candleInterval = "1h") {
       portfolioValue: simStateBefore?.totalValueUsd,
     });
 
+    // Signal confirmation: only act when the same direction appears twice in a row.
+    // Resets on direction change; holds don't affect the buffer.
     if (signal.signal !== "hold") {
+      signalConfirmationBuffer.push(signal.signal);
+      if (signalConfirmationBuffer.length > 2) signalConfirmationBuffer.shift();
+    }
+    const confirmed =
+      signal.signal !== "hold" &&
+      signalConfirmationBuffer.length === 2 &&
+      signalConfirmationBuffer[0] === signalConfirmationBuffer[1];
+
+    if (!confirmed && signal.signal !== "hold") {
+      console.log(`[Heartbeat] Signal ${signal.signal.toUpperCase()} awaiting confirmation (1/2)`);
+    }
+
+    if (confirmed) {
       // Execute simulator trade
       let state = simStateBefore;
       if (!state) state = (await db.initSimulatorState()) ?? null;
