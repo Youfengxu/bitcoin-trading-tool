@@ -15,6 +15,8 @@ import {
 import {
   DEFAULT_STRATEGY_PARAMS,
   deriveChallengerParams,
+  getValidationHorizonMs,
+  MIN_VALIDATION_HORIZON_MS,
   type StrategyParameters,
 } from "../shared/tradingTypes";
 
@@ -465,6 +467,20 @@ describe("Promotion evaluation", () => {
     const r = evaluatePromotion(sigs, "aggressive", 1e12);
     expect(r.n).toBe(0);
     expect(r.shouldPromote).toBe(false);
+  });
+});
+
+describe("Validation horizon", () => {
+  it("matches heartbeat cadence at typical schedules", () => {
+    expect(getValidationHorizonMs(60)).toBe(60 * 60 * 1000);
+    expect(getValidationHorizonMs(15)).toBe(15 * 60 * 1000);
+    expect(getValidationHorizonMs(30)).toBe(30 * 60 * 1000);
+  });
+
+  it("is floored at MIN_VALIDATION_HORIZON_MS for very short schedules", () => {
+    expect(getValidationHorizonMs(5)).toBe(MIN_VALIDATION_HORIZON_MS);
+    expect(getValidationHorizonMs(1)).toBe(MIN_VALIDATION_HORIZON_MS);
+    expect(getValidationHorizonMs(0)).toBe(MIN_VALIDATION_HORIZON_MS);
   });
 });
 

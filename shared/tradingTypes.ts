@@ -47,6 +47,26 @@ export const OPPORTUNITY_COST_LAMBDA = 0.3;
 export const HOLD_NOISE_THRESHOLD = 0.005;
 
 /**
+ * Minimum signal validation horizon. Below this, price moves are too small
+ * to give a meaningful reward signal regardless of cadence.
+ */
+export const MIN_VALIDATION_HORIZON_MS = 15 * 60 * 1000;
+
+/**
+ * Time to wait before evaluating a signal's outcome.
+ *
+ * Tied to heartbeat cadence so consecutive validation windows do not overlap.
+ * Overlapping windows make the champion-challenger paired t-test see
+ * autocorrelated differences, inflating apparent significance and risking
+ * promotion on noise. Floored at MIN_VALIDATION_HORIZON_MS so very fast
+ * cadences still measure a meaningful price move.
+ */
+export function getValidationHorizonMs(heartbeatScheduleMinutes: number): number {
+  const fromSchedule = heartbeatScheduleMinutes * 60 * 1000;
+  return Math.max(fromSchedule, MIN_VALIDATION_HORIZON_MS);
+}
+
+/**
  * Scales minConfidence upward for sub-hourly intervals to compensate for
  * higher indicator noise at shorter timeframes.
  */

@@ -20,6 +20,7 @@ import {
   type StrategyVariant,
   getCandleLimit,
   getConfidenceMultiplier,
+  getValidationHorizonMs,
   deriveChallengerParams,
   OPPORTUNITY_COST_LAMBDA,
   HOLD_NOISE_THRESHOLD,
@@ -67,7 +68,9 @@ export async function handleHeartbeat() {
     }
 
     // 2. Validate pending signals — always runs regardless of schedule setting.
-    await runSignalValidation();
+    //    Horizon scales with heartbeat cadence to keep validation windows
+    //    non-overlapping (preserves t-test independence).
+    await runSignalValidation(heartbeatScheduleMinutes);
 
     // 3. Champion-challenger promotion check (cheap; just a stats test on resolved signals).
     await runPromotionCheck();
@@ -274,14 +277,15 @@ async function runSignalGeneration(candleInterval = "1h") {
   }
 }
 
-async function runSignalValidation() {
+async function runSignalValidation(heartbeatScheduleMinutes: number) {
   try {
+    const validationHorizonMs = getValidationHorizonMs(heartbeatScheduleMinutes);
     const pending = await db.getPendingSignals();
     const { price: currentPrice } = await fetchCurrentPrice();
     let validated = 0;
 
     for (const sig of pending) {
-      if (Date.now() - sig.ts < 60 * 60 * 1000) continue;
+      if (Date.now() - sig.ts < validationHorizonMs) continue;
 
       let outcome: "win" | "loss" | "hold_correct" | "hold_missed";
       if (sig.signal === "hold") {
@@ -365,7 +369,7 @@ async function runSignalValidation() {
         holdCorrect,
         riskAdjustedReturn,
         paramVersionUsed: activeParams?.version,
-        notes: `Auto-validation: ${validated} new signals evaluated (${holdMissed} holds missed real moves, ${holdCorrect} correctly cautious)`,
+        notes: `Auto-validation: ${validated} new signals evaluated at ${(validationHorizonMs / 60000).toFixed(0)}min horizon (${holdMissed} holds missed real moves, ${holdCorrect} correctly cautious)`,
       });
     }
   } catch (error) {

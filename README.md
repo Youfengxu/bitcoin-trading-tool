@@ -134,7 +134,7 @@ The strategy parameters are tuned by three independent mechanisms:
 
 1. **Walk-forward optimizer** (daily) — random ±20% jitters around the active champion are backtested on the last 1,000 candles, scored by `riskAdjustedWeekly = (totalReturn − λ × holdRegret) / weeks`. The best generalising candidate (winner of train→test re-validation) becomes the new champion.
 2. **Champion-challenger** (every heartbeat) — three parameter sets emit signals at the same timestamp: the active champion, an *aggressive* variant (champion with `minConfidence × 0.85`, `zScoreTrendThreshold × 0.9`), and a *conservative* variant (`× 1.15` / `× 1.1`). Only champion's signal trades. Per-period reward for each variant follows the same opportunity-cost formula. A one-sided paired t-test on the difference series (`challenger − champion`) promotes a challenger when **p < 0.05**, **n ≥ 30 pairs**, and **mean diff > 0**. The comparison window resets after every promotion.
-3. **Signal validation** (every heartbeat) — resolved signals (1h horizon) are categorised: win/loss for acted signals, hold_correct/hold_missed for holds based on whether the price moved more than 0.5%. Aggregate stats flow into `validation_log` as the audit trail.
+3. **Signal validation** (every heartbeat) — resolved signals are categorised: win/loss for acted signals, hold_correct/hold_missed for holds based on whether the price moved more than 0.5%. The validation horizon scales with `heartbeatScheduleMinutes` (floored at 15 min) so consecutive validation windows don't overlap — this preserves the independence assumption of the champion-challenger paired t-test. Aggregate stats flow into `validation_log` as the audit trail.
 
 ## Work in Progress
 
