@@ -73,6 +73,27 @@ async function startServer() {
   server.listen(port, () => {
     console.log(`Server running on http://localhost:${port}/`);
   });
+
+  startInternalScheduler();
+}
+
+// Self-hosted scheduler. Manus deployments rely on the platform cron to POST
+// /api/scheduled/heartbeat; without it the signal engine never runs.
+// handleHeartbeat() already gates its own work by heartbeatScheduleMinutes
+// (read from the DB on each tick) and by per-task day/hour markers, so a
+// uniform 1-minute tick is safe and matches Manus's minimum cron resolution.
+function startInternalScheduler() {
+  if (process.env.DISABLE_INTERNAL_SCHEDULER === "1") {
+    console.log("[Scheduler] Disabled via DISABLE_INTERNAL_SCHEDULER=1");
+    return;
+  }
+  const tickMs = 60_000;
+  console.log(`[Scheduler] Internal heartbeat tick every ${tickMs / 1000}s`);
+  setInterval(() => {
+    handleHeartbeat().catch((err) => {
+      console.error("[Scheduler] Heartbeat error:", err);
+    });
+  }, tickMs);
 }
 
 startServer().catch(console.error);
