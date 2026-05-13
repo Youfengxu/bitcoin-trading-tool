@@ -260,7 +260,10 @@ export async function getActiveStrategyParams() {
   const result = await db.select().from(strategyParams)
     .where(eq(strategyParams.isActive, true))
     .orderBy(desc(strategyParams.version)).limit(1);
-  return result.length > 0 ? result[0] : null;
+  if (result.length === 0) return null;
+  const row = result[0]!;
+  if (typeof row.params === "string") row.params = JSON.parse(row.params as string);
+  return row;
 }
 
 export async function insertStrategyParams(params: {
@@ -296,7 +299,7 @@ export async function updateStrategySettings(settings: {
     const { DEFAULT_STRATEGY_PARAMS } = await import("../shared/tradingTypes");
     await db.insert(strategyParams).values({
       version: 1,
-      params: JSON.stringify(DEFAULT_STRATEGY_PARAMS),
+      params: DEFAULT_STRATEGY_PARAMS,
       isActive: true,
       notes: "Auto-seeded on first settings update",
       candleInterval: settings.candleInterval ?? "1h",
