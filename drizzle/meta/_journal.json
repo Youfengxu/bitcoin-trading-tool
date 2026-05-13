@@ -43,6 +43,13 @@
       "when": 1778676237655,
       "tag": "0005_brainy_eternity",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1778677870522,
+      "tag": "0006_jittery_the_captain",
+      "breakpoints": true
     }
   ]
 }

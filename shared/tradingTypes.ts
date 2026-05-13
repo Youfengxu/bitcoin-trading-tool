@@ -90,6 +90,35 @@ export interface StrategyParameters {
   minConfidence: number;     // minimum combined confidence to trigger signal
 }
 
+// ─── Champion-Challenger Variants ────────────────────────────────────
+export const STRATEGY_VARIANTS = ["champion", "aggressive", "conservative"] as const;
+export type StrategyVariant = (typeof STRATEGY_VARIANTS)[number];
+
+/** Significance threshold for paired t-test on (challenger reward − champion reward). */
+export const CHALLENGER_PROMOTION_PVALUE = 0.05;
+/** Minimum paired observations before any promotion is allowed. */
+export const CHALLENGER_PROMOTION_MIN_N = 30;
+
+/**
+ * Derive challenger params from the active champion via fixed transforms.
+ * - aggressive: lower confidence threshold + tighter z-score band (acts more often)
+ * - conservative: higher confidence threshold + wider z-score band (acts less often)
+ */
+export function deriveChallengerParams(
+  champion: StrategyParameters,
+  variant: StrategyVariant
+): StrategyParameters {
+  if (variant === "champion") return champion;
+  const aggressive = variant === "aggressive";
+  const confMult = aggressive ? 0.85 : 1.15;
+  const zMult = aggressive ? 0.9 : 1.1;
+  return {
+    ...champion,
+    minConfidence: Math.max(0.3, Math.min(0.95, champion.minConfidence * confMult)),
+    zScoreTrendThreshold: Math.max(1.0, Math.min(3.5, champion.zScoreTrendThreshold * zMult)),
+  };
+}
+
 export const DEFAULT_STRATEGY_PARAMS: StrategyParameters = {
   rsiBuyThreshold: 30,
   rsiSellThreshold: 70,

@@ -5,7 +5,18 @@ import {
 } from "./engine/technicalAnalysis";
 import { generateSignal, type SignalOutput } from "./engine/signalGenerator";
 import { walkForwardOptimize, validateSignals } from "./engine/walkForwardOptimizer";
-import { DEFAULT_STRATEGY_PARAMS, type StrategyParameters } from "../shared/tradingTypes";
+import {
+  computeReward,
+  pairedTTest,
+  buildVariantPairs,
+  evaluatePromotion,
+  type ResolvedSignal,
+} from "./engine/championChallenger";
+import {
+  DEFAULT_STRATEGY_PARAMS,
+  deriveChallengerParams,
+  type StrategyParameters,
+} from "../shared/tradingTypes";
 
 // ─── Helper: generate synthetic candle data ─────────────────────────
 function generateCandles(count: number, basePrice = 50000, volatility = 500): CandleData[] {
@@ -341,5 +352,139 @@ describe("Signal Validation", () => {
     const b = validateSignals(heldThroughBigMove, 0.3);
     // Same acted return, but b has a missed hold → strictly lower riskAdjustedReturn
     expect(b.riskAdjustedReturn).toBeLessThan(a.riskAdjustedReturn);
+  });
+});
+
+// ─── Champion-Challenger Tests ───────────────────────────────────────
+describe("Champion-Challenger reward", () => {
+  it("rewards a correct buy by the realised return", () => {
+    expect(computeReward("buy", 50000, 51000)).toBeCloseTo(0.02, 6);
+  });
+
+  it("rewards a correct sell by the inverse realised return", () => {
+    expect(computeReward("sell", 50000, 49000)).toBeCloseTo(0.02, 6);
+  });
+
+  it("penalises holds by λ × |priceMove|", () => {
+    expect(computeReward("hold", 50000, 51000, 0.3)).toBeCloseTo(-0.006, 6);
+    expect(computeReward("hold", 50000, 49000, 0.3)).toBeCloseTo(-0.006, 6);
+  });
+
+  it("a wrong buy gets a negative reward", () => {
+    expect(computeReward("buy", 50000, 49000)).toBeCloseTo(-0.02, 6);
+  });
+});
+
+describe("Paired t-test", () => {
+  it("returns p ≈ 1 for tiny n", () => {
+    expect(pairedTTest([]).p).toBe(1);
+    expect(pairedTTest([0.5]).p).toBe(1);
+  });
+
+  it("returns p < 0.05 for a clear, consistent positive shift", () => {
+    // 30 samples, mean 0.01, low variance — clearly positive
+    const diffs = Array.from({ length: 30 }, () => 0.01 + (Math.random() - 0.5) * 0.002);
+    const r = pairedTTest(diffs);
+    expect(r.n).toBe(30);
+    expect(r.meanDiff).toBeGreaterThan(0);
+    expect(r.p).toBeLessThan(0.05);
+  });
+
+  it("returns p ≥ 0.05 for true zero-mean Gaussian noise", () => {
+    // Construct differences that perfectly sum to zero — guaranteed non-significant.
+    const diffs: number[] = [];
+    for (let i = 0; i < 15; i++) {
+      diffs.push(0.01);
+      diffs.push(-0.01);
+    }
+    const r = pairedTTest(diffs);
+    expect(r.meanDiff).toBeCloseTo(0, 10);
+    expect(r.p).toBeCloseTo(0.5, 5);
+  });
+
+  it("returns extremely small p for uniformly positive differences", () => {
+    // Floating-point variance is tiny but non-zero, so p is ε rather than exactly 0.
+    const diffs = Array.from({ length: 30 }, () => 0.01);
+    const r = pairedTTest(diffs);
+    expect(r.p).toBeLessThan(1e-6);
+  });
+});
+
+describe("Variant pairing", () => {
+  it("pairs champion and challenger signals at the same ts", () => {
+    const signals: ResolvedSignal[] = [
+      { ts: 1000, signal: "buy", price: 50000, outcomePrice: 50500, strategyVariant: "champion" },
+      { ts: 1000, signal: "hold", price: 50000, outcomePrice: 50500, strategyVariant: "aggressive" },
+      { ts: 1000, signal: "buy", price: 50000, outcomePrice: 50500, strategyVariant: "conservative" },
+      { ts: 2000, signal: "sell", price: 50500, outcomePrice: 50200, strategyVariant: "champion" },
+      // aggressive missing at ts=2000 — should be skipped
+      { ts: 2000, signal: "sell", price: 50500, outcomePrice: 50200, strategyVariant: "conservative" },
+    ];
+    const aggPairs = buildVariantPairs(signals, "aggressive", 0.3);
+    const consPairs = buildVariantPairs(signals, "conservative", 0.3);
+    expect(aggPairs.length).toBe(1);
+    expect(consPairs.length).toBe(2);
+  });
+
+  it("ignores pairs with missing outcomePrice", () => {
+    const signals: ResolvedSignal[] = [
+      { ts: 1000, signal: "buy", price: 50000, outcomePrice: null, strategyVariant: "champion" },
+      { ts: 1000, signal: "buy", price: 50000, outcomePrice: 50500, strategyVariant: "aggressive" },
+    ];
+    expect(buildVariantPairs(signals, "aggressive", 0.3)).toHaveLength(0);
+  });
+});
+
+describe("Promotion evaluation", () => {
+  function makePairedSignals(n: number, championReturn: number, challengerReturn: number): ResolvedSignal[] {
+    const out: ResolvedSignal[] = [];
+    for (let i = 0; i < n; i++) {
+      const ts = 1000 + i * 1000;
+      out.push({ ts, signal: "buy", price: 50000, outcomePrice: 50000 * (1 + championReturn), strategyVariant: "champion" });
+      out.push({ ts, signal: "buy", price: 50000, outcomePrice: 50000 * (1 + challengerReturn), strategyVariant: "aggressive" });
+    }
+    return out;
+  }
+
+  it("does not promote with fewer than 30 pairs", () => {
+    const sigs = makePairedSignals(20, 0.01, 0.02);
+    const r = evaluatePromotion(sigs, "aggressive", 0);
+    expect(r.shouldPromote).toBe(false);
+    expect(r.reason).toMatch(/insufficient/);
+  });
+
+  it("does not promote when mean diff is negative", () => {
+    const sigs = makePairedSignals(40, 0.02, 0.01);
+    const r = evaluatePromotion(sigs, "aggressive", 0);
+    expect(r.shouldPromote).toBe(false);
+  });
+
+  it("excludes pairs from before championEpochMs", () => {
+    const sigs = makePairedSignals(40, 0.01, 0.02);
+    // championEpoch later than all signals → 0 eligible
+    const r = evaluatePromotion(sigs, "aggressive", 1e12);
+    expect(r.n).toBe(0);
+    expect(r.shouldPromote).toBe(false);
+  });
+});
+
+describe("Challenger parameter derivation", () => {
+  it("aggressive variant lowers minConfidence and zScoreTrendThreshold", () => {
+    const champ = DEFAULT_STRATEGY_PARAMS;
+    const agg = deriveChallengerParams(champ, "aggressive");
+    expect(agg.minConfidence).toBeLessThan(champ.minConfidence);
+    expect(agg.zScoreTrendThreshold).toBeLessThan(champ.zScoreTrendThreshold);
+  });
+
+  it("conservative variant raises minConfidence and zScoreTrendThreshold", () => {
+    const champ = DEFAULT_STRATEGY_PARAMS;
+    const cons = deriveChallengerParams(champ, "conservative");
+    expect(cons.minConfidence).toBeGreaterThan(champ.minConfidence);
+    expect(cons.zScoreTrendThreshold).toBeGreaterThan(champ.zScoreTrendThreshold);
+  });
+
+  it("champion variant is identity", () => {
+    const champ = DEFAULT_STRATEGY_PARAMS;
+    expect(deriveChallengerParams(champ, "champion")).toEqual(champ);
   });
 });

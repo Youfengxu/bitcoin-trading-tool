@@ -9,14 +9,18 @@ import {
   fetchCurrentPrice,
   fetchCandles,
 } from "./engine/marketData";
-import { computeAllMetrics, type CandleData } from "./engine/technicalAnalysis";
+import { computeAllMetrics, type CandleData, type AllMetrics, classifyTrend } from "./engine/technicalAnalysis";
 import { generateSignal } from "./engine/signalGenerator";
 import { walkForwardOptimize } from "./engine/walkForwardOptimizer";
+import { evaluatePromotion, type ResolvedSignal } from "./engine/championChallenger";
 import {
   DEFAULT_STRATEGY_PARAMS,
+  STRATEGY_VARIANTS,
   type StrategyParameters,
+  type StrategyVariant,
   getCandleLimit,
   getConfidenceMultiplier,
+  deriveChallengerParams,
   OPPORTUNITY_COST_LAMBDA,
   HOLD_NOISE_THRESHOLD,
 } from "../shared/tradingTypes";
@@ -65,7 +69,10 @@ export async function handleHeartbeat() {
     // 2. Validate pending signals — always runs regardless of schedule setting.
     await runSignalValidation();
 
-    // 3. Run optimization once per day at hour 0 — always runs regardless of schedule setting.
+    // 3. Champion-challenger promotion check (cheap; just a stats test on resolved signals).
+    await runPromotionCheck();
+
+    // 4. Run optimization once per day at hour 0 — always runs regardless of schedule setting.
     if (currentHour === 0 && lastOptimizeHour !== currentHour) {
       lastOptimizeHour = currentHour;
       await runOptimization();
@@ -79,6 +86,23 @@ export async function handleHeartbeat() {
   } catch (error) {
     console.error("[Heartbeat] Error:", error);
   }
+}
+
+/**
+ * Re-classify the trend on an already-computed metrics object using the variant's
+ * z-score thresholds. This lets us run all 3 variants without recomputing the
+ * expensive Hurst/ADX/SMA fields each heartbeat.
+ */
+function metricsForVariant(base: AllMetrics, variantParams: StrategyParameters): AllMetrics {
+  if (base.zScore === null) return base;
+  return {
+    ...base,
+    trendClassification: classifyTrend(
+      base.zScore,
+      variantParams.zScoreTrendThreshold,
+      variantParams.zScoreBlipThreshold
+    ),
+  };
 }
 
 async function runSignalGeneration(candleInterval = "1h") {
@@ -96,32 +120,70 @@ async function runSignalGeneration(candleInterval = "1h") {
       ? (activeParams.params as StrategyParameters)
       : DEFAULT_STRATEGY_PARAMS;
 
-    // Scale minConfidence upward for sub-hourly intervals to suppress noise.
+    // Sub-hourly noise compensation applies to all variants identically.
     const confidenceMultiplier = getConfidenceMultiplier(candleInterval);
-    const params: StrategyParameters = {
+    const championParams: StrategyParameters = {
       ...baseParams,
       minConfidence: Math.min(0.95, baseParams.minConfidence * confidenceMultiplier),
     };
 
-    const metrics = computeAllMetrics(
+    // Compute metrics once with champion's thresholds — Hurst/ADX/SMA are
+    // intrinsic and don't depend on threshold params.
+    const baseMetrics = computeAllMetrics(
       candleData,
-      params.zScoreTrendThreshold,
-      params.zScoreBlipThreshold
+      championParams.zScoreTrendThreshold,
+      championParams.zScoreBlipThreshold
     );
-    const signal = generateSignal(metrics, params);
     const ts = Date.now();
+    await db.insertMetricSnapshot({ ts, ...baseMetrics });
 
-    await db.insertMetricSnapshot({ ts, ...metrics });
     const simStateBefore = await db.getSimulatorState();
-    const signalId = await db.insertSignal({
-      ts,
-      signal: signal.signal,
-      price: metrics.price,
-      confidence: signal.confidence,
-      reasoning: signal.reasoning,
-      metricsSnapshot: metrics,
-      portfolioValue: simStateBefore?.totalValueUsd,
-    });
+
+    // Generate signals for all variants in parallel-conceptually (no I/O between them).
+    // Only champion's signal mutates the portfolio + sends notifications.
+    let championSignal: { signal: "buy" | "sell" | "hold"; confidence: number; reasoning: string } | null = null;
+    let championSignalId: number | undefined;
+    let championMetrics: AllMetrics = baseMetrics;
+    let championAppliedParams = championParams;
+
+    for (const variant of STRATEGY_VARIANTS) {
+      const variantParams: StrategyParameters =
+        variant === "champion" ? championParams : deriveChallengerParams(championParams, variant);
+      const variantMetrics = metricsForVariant(baseMetrics, variantParams);
+      const sig = generateSignal(variantMetrics, variantParams);
+
+      const insertId = await db.insertSignal({
+        ts,
+        signal: sig.signal,
+        price: variantMetrics.price,
+        confidence: sig.confidence,
+        reasoning: sig.reasoning,
+        metricsSnapshot: variantMetrics,
+        portfolioValue: simStateBefore?.totalValueUsd,
+        strategyVariant: variant,
+      });
+
+      if (variant === "champion") {
+        championSignal = sig;
+        championSignalId = insertId ?? undefined;
+        championMetrics = variantMetrics;
+        championAppliedParams = variantParams;
+      } else {
+        console.log(`[Heartbeat] Shadow ${variant}: ${sig.signal} (conf ${(sig.confidence * 100).toFixed(0)}%)`);
+      }
+    }
+
+    if (!championSignal) {
+      console.error("[Heartbeat] Champion signal missing — aborting trade execution");
+      return;
+    }
+
+    // From here on the champion's signal drives the simulator and notifications,
+    // reusing the existing confirmation-buffer + execution logic.
+    const signal = championSignal;
+    const signalId = championSignalId;
+    const metrics = championMetrics;
+    const params = championAppliedParams;
 
     // Signal confirmation: only act when the same direction appears twice in a row.
     // Resets on direction change; holds don't affect the buffer.
@@ -206,7 +268,7 @@ async function runSignalGeneration(candleInterval = "1h") {
       }
     }
 
-    console.log(`[Heartbeat] Signal: ${signal.signal} @ $${metrics.price.toFixed(2)} (confidence: ${(signal.confidence * 100).toFixed(0)}%)`);
+    console.log(`[Heartbeat] Champion: ${signal.signal} @ $${metrics.price.toFixed(2)} (confidence: ${(signal.confidence * 100).toFixed(0)}%)`);
   } catch (error) {
     console.error("[Heartbeat] Signal generation failed:", error);
   }
@@ -308,6 +370,73 @@ async function runSignalValidation() {
     }
   } catch (error) {
     console.error("[Heartbeat] Validation failed:", error);
+  }
+}
+
+/**
+ * Champion-challenger promotion check.
+ *
+ * For each challenger variant, build paired (champion_reward, challenger_reward)
+ * observations from resolved signals since the current champion was activated.
+ * If the paired t-test shows a significant positive mean difference, promote
+ * the challenger to champion (insert a new strategy_params version).
+ */
+async function runPromotionCheck() {
+  try {
+    const activeParams = await db.getActiveStrategyParams();
+    if (!activeParams) return;
+
+    const championEpoch = activeParams.createdAt instanceof Date
+      ? activeParams.createdAt.getTime()
+      : Number(activeParams.createdAt);
+
+    const resolved = await db.getResolvedSignalsSince(championEpoch, 1000);
+    if (resolved.length < 10) return; // not enough data yet
+
+    const resolvedShaped: ResolvedSignal[] = resolved
+      .filter((s): s is typeof s & { signal: "buy" | "sell" | "hold" } =>
+        s.signal === "buy" || s.signal === "sell" || s.signal === "hold"
+      )
+      .map((s) => ({
+        ts: s.ts,
+        signal: s.signal,
+        price: s.price,
+        outcomePrice: s.outcomePrice,
+        strategyVariant: s.strategyVariant,
+      }));
+
+    const baseParams = activeParams.params as StrategyParameters;
+
+    for (const variant of ["aggressive", "conservative"] as const) {
+      const result = evaluatePromotion(resolvedShaped, variant, championEpoch);
+      console.log(`[ChampionChallenger] ${variant}: ${result.reason}`);
+
+      if (result.shouldPromote) {
+        const newParams = deriveChallengerParams(baseParams, variant);
+        const newVersion = (activeParams.version ?? 0) + 1;
+        await db.insertStrategyParams({
+          version: newVersion,
+          params: newParams,
+          isActive: true,
+          notes: `[Auto-promote] ${variant} challenger beat champion: n=${result.n}, meanDiff=${(result.meanDiff * 100).toFixed(3)}%, p=${result.p.toFixed(4)}`,
+        });
+
+        try {
+          await notifyOwner({
+            title: `Strategy promoted: ${variant} → champion`,
+            content: `The ${variant} challenger beat the active champion on a paired t-test (n=${result.n}, mean diff ${(result.meanDiff * 100).toFixed(3)}%, p=${result.p.toFixed(4)}). New params are version ${newVersion}.`,
+          });
+        } catch (e) {
+          console.warn("[ChampionChallenger] Promotion notification failed:", e);
+        }
+
+        // Only promote one variant per cycle. The new champion's epoch resets the
+        // comparison window for the next round of challengers.
+        return;
+      }
+    }
+  } catch (error) {
+    console.error("[ChampionChallenger] Promotion check failed:", error);
   }
 }
 

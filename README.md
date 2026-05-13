@@ -14,6 +14,7 @@ A professional, full-stack Bitcoin trading intelligence dashboard with real-time
 | **Change Detection** | CUSUM changepoint alarm, Hurst Exponent regime classifier (trending / random walk / mean-reverting), Wilder ADX trend-strength filter |
 | **Signal Generator** | Combines 8 indicator layers into a buy/sell/hold verdict with Hurst regime weighting and CUSUM confidence boost |
 | **Self-Learning Optimizer** | Walk-forward backtest runs daily, selects parameters that maximise **risk-adjusted weekly return** (`totalReturn − λ × holdRegret`), accounting for the opportunity cost of inaction |
+| **Champion-Challenger Learning** | Every heartbeat emits three shadow signals — champion plus two challengers (more aggressive, more conservative). Only champion executes; a one-sided paired t-test on per-period reward decides whether to promote a challenger (requires p < 0.05, n ≥ 30 pairs, positive mean diff). |
 | **Signal Validation** | Tracks predicted vs actual outcomes for all signals including holds; reports win rate, Sharpe, max drawdown, hold regret, and risk-adjusted return |
 | **Paper Trading Simulator** | Starts with $10,000 USD seed, executes signals automatically, tracks portfolio over time |
 | **Weekly Performance Report** | Returns, trade history, portfolio growth chart, vs BTC buy-and-hold baseline |
@@ -127,13 +128,15 @@ Configure the heartbeat schedule from the Manus project Settings → Schedules p
 
 ---
 
+## Learning Pipeline
+
+The strategy parameters are tuned by three independent mechanisms:
+
+1. **Walk-forward optimizer** (daily) — random ±20% jitters around the active champion are backtested on the last 1,000 candles, scored by `riskAdjustedWeekly = (totalReturn − λ × holdRegret) / weeks`. The best generalising candidate (winner of train→test re-validation) becomes the new champion.
+2. **Champion-challenger** (every heartbeat) — three parameter sets emit signals at the same timestamp: the active champion, an *aggressive* variant (champion with `minConfidence × 0.85`, `zScoreTrendThreshold × 0.9`), and a *conservative* variant (`× 1.15` / `× 1.1`). Only champion's signal trades. Per-period reward for each variant follows the same opportunity-cost formula. A one-sided paired t-test on the difference series (`challenger − champion`) promotes a challenger when **p < 0.05**, **n ≥ 30 pairs**, and **mean diff > 0**. The comparison window resets after every promotion.
+3. **Signal validation** (every heartbeat) — resolved signals (1h horizon) are categorised: win/loss for acted signals, hold_correct/hold_missed for holds based on whether the price moved more than 0.5%. Aggregate stats flow into `validation_log` as the audit trail.
+
 ## Work in Progress
-
-### Champion-Challenger Learning (next up)
-
-Run 2–3 strategy parameter sets in parallel against the same incoming heartbeat candles. Only the **champion** executes simulator trades. **Challengers** (one more aggressive, one more conservative) emit shadow signals that are logged and validated alongside the champion. This gives 3× labelled outcomes per heartbeat without portfolio risk.
-
-**Promotion criterion**: a challenger must beat the champion on `riskAdjustedReturn` with **statistical significance** before promotion. Concrete test: paired t-test on the per-period reward series, p < 0.05 over a minimum of 30 paired observations. This avoids promoting on lucky streaks. Implementation will need a `strategyVariant` column on `trading_signals` and a new `challenger_state` table tracking the rolling reward series per variant.
 
 ### Regime-Conditional Parameters
 

@@ -1,4 +1,4 @@
-import { eq, desc, and, gte, lte, sql } from "drizzle-orm";
+import { eq, desc, and, gte, lte, ne, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   InsertUser,
@@ -135,6 +135,7 @@ export async function insertSignal(sig: {
   ts: number; signal: "buy" | "sell" | "hold"; price: number;
   confidence?: number; reasoning: string; metricsSnapshot?: unknown;
   portfolioValue?: number;
+  strategyVariant?: "champion" | "aggressive" | "conservative";
 }) {
   const db = await getDb();
   if (!db) return null;
@@ -143,8 +144,24 @@ export async function insertSignal(sig: {
     confidence: sig.confidence, reasoning: sig.reasoning,
     metricsSnapshot: sig.metricsSnapshot,
     portfolioValue: sig.portfolioValue,
+    strategyVariant: sig.strategyVariant,
   });
   return result[0]?.insertId;
+}
+
+/**
+ * Fetch resolved signals (outcome != pending) since a given timestamp, used by
+ * the champion-challenger evaluator to construct paired observations.
+ */
+export async function getResolvedSignalsSince(sinceTs: number, limit = 1000) {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(tradingSignals)
+    .where(and(gte(tradingSignals.ts, sinceTs), ne(tradingSignals.outcome, "pending")))
+    .orderBy(desc(tradingSignals.ts))
+    .limit(limit);
 }
 
 export async function getRecentSignals(limit: number = 50) {

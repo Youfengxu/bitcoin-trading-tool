@@ -87,6 +87,9 @@ export const tradingSignals = mysqlTable("trading_signals", {
   outcomePrice: double("outcomePrice"),
   outcomeTs: bigint("outcomeTs", { mode: "number" }),
   portfolioValue: double("portfolioValue"),
+  /** Strategy variant: "champion" (acts on portfolio), "aggressive"/"conservative" (shadow-only).
+   *  NULL for legacy/pre-Phase-2 signals. */
+  strategyVariant: varchar("strategyVariant", { length: 20 }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
