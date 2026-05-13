@@ -17,6 +17,8 @@ import {
   type StrategyParameters,
   getCandleLimit,
   getConfidenceMultiplier,
+  OPPORTUNITY_COST_LAMBDA,
+  HOLD_NOISE_THRESHOLD,
 } from "../shared/tradingTypes";
 import { notifyOwner } from "./_core/notification";
 import * as db from "./db";
@@ -218,28 +220,35 @@ async function runSignalValidation() {
 
     for (const sig of pending) {
       if (Date.now() - sig.ts < 60 * 60 * 1000) continue;
-      const isWin =
-        (sig.signal === "buy" && currentPrice > sig.price) ||
-        (sig.signal === "sell" && currentPrice < sig.price);
-      await db.updateSignalOutcome(sig.id, isWin ? "win" : "loss", currentPrice, Date.now());
+
+      let outcome: "win" | "loss" | "hold_correct" | "hold_missed";
+      if (sig.signal === "hold") {
+        const absMove = Math.abs(currentPrice - sig.price) / sig.price;
+        outcome = absMove > HOLD_NOISE_THRESHOLD ? "hold_missed" : "hold_correct";
+      } else {
+        const isWin =
+          (sig.signal === "buy" && currentPrice > sig.price) ||
+          (sig.signal === "sell" && currentPrice < sig.price);
+        outcome = isWin ? "win" : "loss";
+      }
+      await db.updateSignalOutcome(sig.id, outcome, currentPrice, Date.now());
       validated++;
     }
 
     if (validated > 0) {
       console.log(`[Heartbeat] Validated ${validated} signals`);
 
-      // Log validation entry with Sharpe ratio and drawdown from realized outcomes
       const signals = await db.getRecentSignals(200);
-      const resolved = signals.filter((s) => s.outcome !== "pending" && s.signal !== "hold" && s.outcomePrice);
-      const wins = resolved.filter((s) => s.outcome === "win").length;
-      const winRate = resolved.length > 0 ? wins / resolved.length : 0;
+      const resolved = signals.filter((s) => s.outcome !== "pending" && s.outcomePrice);
+      const acted = resolved.filter((s) => s.signal !== "hold");
+      const wins = acted.filter((s) => s.outcome === "win").length;
+      const winRate = acted.length > 0 ? wins / acted.length : 0;
 
-      // Compute per-signal returns for Sharpe and drawdown
-      const signalReturns = resolved.map((s) => {
-        const returnPct = s.signal === "buy"
-          ? ((s.outcomePrice! - s.price) / s.price)
-          : ((s.price - s.outcomePrice!) / s.price);
-        return returnPct;
+      // Per-acted-signal returns for Sharpe and drawdown
+      const signalReturns = acted.map((s) => {
+        return s.signal === "buy"
+          ? (s.outcomePrice! - s.price) / s.price
+          : (s.price - s.outcomePrice!) / s.price;
       });
       const avgReturn = signalReturns.length > 0
         ? signalReturns.reduce((a, b) => a + b, 0) / signalReturns.length
@@ -250,14 +259,13 @@ async function runSignalValidation() {
         const stdDev = Math.sqrt(variance);
         sharpeRatio = stdDev > 0 ? (avgReturn / stdDev) * Math.sqrt(52) : 0;
       }
-      // Max drawdown from cumulative signal returns
       let maxDrawdown: number | undefined;
       if (signalReturns.length > 0) {
         let cumReturn = 1;
         let peak = 1;
         let dd = 0;
         for (const r of signalReturns) {
-          cumReturn *= (1 + r);
+          cumReturn *= 1 + r;
           if (cumReturn > peak) peak = cumReturn;
           const currentDd = (peak - cumReturn) / peak;
           if (currentDd > dd) dd = currentDd;
@@ -265,18 +273,37 @@ async function runSignalValidation() {
         maxDrawdown = dd;
       }
 
+      // Hold opportunity-cost accounting
+      const holds = resolved.filter((s) => s.signal === "hold");
+      let holdRegret = 0;
+      let holdMissed = 0;
+      let holdCorrect = 0;
+      for (const h of holds) {
+        const absReturn = Math.abs(h.outcomePrice! - h.price) / h.price;
+        holdRegret += absReturn;
+        if (h.outcome === "hold_missed") holdMissed++;
+        else if (h.outcome === "hold_correct") holdCorrect++;
+      }
+      const totalForPenalty = acted.length + holds.length;
+      const avgHoldRegret = totalForPenalty > 0 ? holdRegret / totalForPenalty : 0;
+      const riskAdjustedReturn = avgReturn - OPPORTUNITY_COST_LAMBDA * avgHoldRegret;
+
       const activeParams = await db.getActiveStrategyParams();
       await db.insertValidationEntry({
         periodStart: Date.now() - 24 * 60 * 60 * 1000,
         periodEnd: Date.now(),
-        totalSignals: resolved.length,
+        totalSignals: acted.length,
         correctSignals: wins,
         winRate,
         sharpeRatio,
         maxDrawdown,
         avgReturn,
+        holdRegret,
+        holdMissed,
+        holdCorrect,
+        riskAdjustedReturn,
         paramVersionUsed: activeParams?.version,
-        notes: `Auto-validation: ${validated} new signals evaluated`,
+        notes: `Auto-validation: ${validated} new signals evaluated (${holdMissed} holds missed real moves, ${holdCorrect} correctly cautious)`,
       });
     }
   } catch (error) {

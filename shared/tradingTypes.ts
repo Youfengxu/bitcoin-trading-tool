@@ -24,6 +24,29 @@ export function getCandleLimit(interval: string): number {
 }
 
 /**
+ * Opportunity-cost weight (λ) for the optimizer's reward function.
+ * A hold during a 1% absolute price move is penalised by λ × 1%.
+ *
+ * Calibrated by server/scripts/lambdaSensitivity.ts. First-pass result on 720
+ * recent 1h candles (May 2026, 503 train / 217 test): λ in [0, 1.5] produces
+ * nearly identical out-of-sample returns because the current 24-variation
+ * random sampler doesn't span the active-vs-passive axis well — λ only differentiates
+ * once challenger variants explore wider parameter ranges (Phase 2 work).
+ *
+ * 0.3 was chosen as a mid-range default: meaningful enough to be visible in
+ * the validation log, small enough not to dominate raw return until the
+ * variation pool diversifies.
+ */
+export const OPPORTUNITY_COST_LAMBDA = 0.3;
+
+/**
+ * Below this absolute return, a hold is considered "correctly cautious"
+ * (price stayed in noise). Above it, the hold missed a real move.
+ * Used to categorise hold outcomes in the signal validation log.
+ */
+export const HOLD_NOISE_THRESHOLD = 0.005;
+
+/**
  * Scales minConfidence upward for sub-hourly intervals to compensate for
  * higher indicator noise at shorter timeframes.
  */

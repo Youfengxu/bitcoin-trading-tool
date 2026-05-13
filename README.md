@@ -13,8 +13,8 @@ A professional, full-stack Bitcoin trading intelligence dashboard with real-time
 | **Statistical Significance** | Z-score engine classifies each price move as a meaningful **trend** or a noise **blip** |
 | **Change Detection** | CUSUM changepoint alarm, Hurst Exponent regime classifier (trending / random walk / mean-reverting), Wilder ADX trend-strength filter |
 | **Signal Generator** | Combines 8 indicator layers into a buy/sell/hold verdict with Hurst regime weighting and CUSUM confidence boost |
-| **Self-Learning Optimizer** | Walk-forward backtest runs weekly, selects parameters that maximise weekly returns |
-| **Signal Validation** | Tracks predicted vs actual outcomes; reports win rate, Sharpe ratio, and max drawdown |
+| **Self-Learning Optimizer** | Walk-forward backtest runs daily, selects parameters that maximise **risk-adjusted weekly return** (`totalReturn − λ × holdRegret`), accounting for the opportunity cost of inaction |
+| **Signal Validation** | Tracks predicted vs actual outcomes for all signals including holds; reports win rate, Sharpe, max drawdown, hold regret, and risk-adjusted return |
 | **Paper Trading Simulator** | Starts with $10,000 USD seed, executes signals automatically, tracks portfolio over time |
 | **Weekly Performance Report** | Returns, trade history, portfolio growth chart, vs BTC buy-and-hold baseline |
 | **AI Analysis Assistant** | On-demand LLM commentary interpreting current metrics, signals, and portfolio state |
@@ -128,6 +128,20 @@ Configure the heartbeat schedule from the Manus project Settings → Schedules p
 ---
 
 ## Work in Progress
+
+### Champion-Challenger Learning (next up)
+
+Run 2–3 strategy parameter sets in parallel against the same incoming heartbeat candles. Only the **champion** executes simulator trades. **Challengers** (one more aggressive, one more conservative) emit shadow signals that are logged and validated alongside the champion. This gives 3× labelled outcomes per heartbeat without portfolio risk.
+
+**Promotion criterion**: a challenger must beat the champion on `riskAdjustedReturn` with **statistical significance** before promotion. Concrete test: paired t-test on the per-period reward series, p < 0.05 over a minimum of 30 paired observations. This avoids promoting on lucky streaks. Implementation will need a `strategyVariant` column on `trading_signals` and a new `challenger_state` table tracking the rolling reward series per variant.
+
+### Regime-Conditional Parameters
+
+Maintain three parameter sets keyed by the Hurst regime detected on each heartbeat (`H > 0.6` = trending, `0.45–0.6` = random walk, `< 0.45` = mean-reverting). The walk-forward optimizer runs per-regime, using only historical candles where that regime held. At signal time, route through the param set matching current Hurst. Defer until Phase 2 has accumulated enough per-regime data — otherwise each regime learns from too few samples.
+
+### Coordinate Descent in the Optimizer
+
+Replace the pure ±20% random jitter in `generateParamVariations` with coordinate descent: vary one parameter at a time (±10%, ±20%) and walk a greedy improvement path. Cheaper convergence than random search for the same compute budget. Sensitivity testing already shows random sampling under-explores the active-vs-passive axis, so this becomes important once challengers diversify the variation pool.
 
 ### BOCPD — Bayesian Online Changepoint Detection
 

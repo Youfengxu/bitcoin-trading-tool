@@ -262,7 +262,7 @@ describe("Signal Generator", () => {
 describe("Walk-Forward Optimizer", () => {
   it("returns optimized parameters and results", () => {
     const candles = generateCandles(300, 50000, 300);
-    const result = walkForwardOptimize(candles, DEFAULT_STRATEGY_PARAMS, 0.7);
+    const result = walkForwardOptimize(candles, DEFAULT_STRATEGY_PARAMS, { trainRatio: 0.7 });
     expect(result).toHaveProperty("bestParams");
     expect(result).toHaveProperty("bestResult");
     expect(result).toHaveProperty("allResults");
@@ -309,13 +309,37 @@ describe("Signal Validation", () => {
     expect(result.winRate).toBe(0);
   });
 
-  it("ignores hold signals", () => {
+  it("counts holds separately and accumulates opportunity-cost regret", () => {
     const signals = [
-      { signal: "hold" as const, price: 50000, outcome: "pending" as const, outcomePrice: null, ts: Date.now() },
+      { signal: "hold" as const, price: 50000, outcome: "pending" as const, outcomePrice: 50100, ts: Date.now() }, // 0.2% move → correct
+      { signal: "hold" as const, price: 50000, outcome: "pending" as const, outcomePrice: 51000, ts: Date.now() }, // 2% move → missed
       { signal: "buy" as const, price: 50000, outcome: "win" as const, outcomePrice: 51000, ts: Date.now() - 7200000 },
     ];
     const result = validateSignals(signals);
-    // hold signals should be excluded
-    expect(result.totalSignals).toBeLessThanOrEqual(2);
+    // Acted signals: 1 (only the buy)
+    expect(result.totalSignals).toBe(1);
+    expect(result.correctSignals).toBe(1);
+    // Holds: 2 total, 1 correct, 1 missed
+    expect(result.holdCount).toBe(2);
+    expect(result.holdCorrect).toBe(1);
+    expect(result.holdMissed).toBe(1);
+    // holdRegret = 0.002 + 0.02 = 0.022
+    expect(result.holdRegret).toBeCloseTo(0.022, 4);
+    // riskAdjustedReturn = avgReturn − λ × avgHoldRegret
+    expect(typeof result.riskAdjustedReturn).toBe("number");
+  });
+
+  it("penalises a strategy that misses big moves via holds", () => {
+    const acted = [
+      { signal: "buy" as const, price: 50000, outcome: "win" as const, outcomePrice: 50500, ts: Date.now() - 7200000 },
+    ];
+    const heldThroughBigMove = [
+      ...acted,
+      { signal: "hold" as const, price: 50000, outcome: "pending" as const, outcomePrice: 53000, ts: Date.now() }, // 6% move missed
+    ];
+    const a = validateSignals(acted, 0.3);
+    const b = validateSignals(heldThroughBigMove, 0.3);
+    // Same acted return, but b has a missed hold → strictly lower riskAdjustedReturn
+    expect(b.riskAdjustedReturn).toBeLessThan(a.riskAdjustedReturn);
   });
 });

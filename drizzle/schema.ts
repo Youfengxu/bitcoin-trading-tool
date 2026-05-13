@@ -83,7 +83,7 @@ export const tradingSignals = mysqlTable("trading_signals", {
   reasoning: text("reasoning").notNull(),
   metricsSnapshot: json("metricsSnapshot"),
   executed: boolean("executed").default(false).notNull(),
-  outcome: mysqlEnum("outcome", ["win", "loss", "pending"]).default("pending"),
+  outcome: mysqlEnum("outcome", ["win", "loss", "pending", "hold_correct", "hold_missed"]).default("pending"),
   outcomePrice: double("outcomePrice"),
   outcomeTs: bigint("outcomeTs", { mode: "number" }),
   portfolioValue: double("portfolioValue"),
@@ -172,6 +172,14 @@ export const validationLog = mysqlTable("validation_log", {
   sharpeRatio: double("sharpeRatio"),
   maxDrawdown: double("maxDrawdown"),
   avgReturn: double("avgReturn"),
+  /** Sum of |returnPct| across all hold signals in the window — raw inaction regret. */
+  holdRegret: double("holdRegret"),
+  /** Count of holds where |returnPct| > HOLD_NOISE_THRESHOLD (missed a real move). */
+  holdMissed: int("holdMissed"),
+  /** Count of holds where |returnPct| ≤ HOLD_NOISE_THRESHOLD (correctly cautious). */
+  holdCorrect: int("holdCorrect"),
+  /** avgReturn − λ × (holdRegret / total signals). Optimizer's objective. */
+  riskAdjustedReturn: double("riskAdjustedReturn"),
   paramVersionUsed: int("paramVersionUsed"),
   notes: text("notes"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),

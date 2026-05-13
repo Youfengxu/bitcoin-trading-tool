@@ -154,7 +154,10 @@ export async function getRecentSignals(limit: number = 50) {
 }
 
 export async function updateSignalOutcome(
-  id: number, outcome: "win" | "loss", outcomePrice: number, outcomeTs: number
+  id: number,
+  outcome: "win" | "loss" | "hold_correct" | "hold_missed",
+  outcomePrice: number,
+  outcomeTs: number
 ) {
   const db = await getDb();
   if (!db) return;
@@ -323,7 +326,10 @@ export async function getAllStrategyVersions() {
 export async function insertValidationEntry(entry: {
   periodStart: number; periodEnd: number; totalSignals: number;
   correctSignals: number; winRate: number; sharpeRatio?: number;
-  maxDrawdown?: number; avgReturn?: number; paramVersionUsed?: number; notes?: string;
+  maxDrawdown?: number; avgReturn?: number;
+  holdRegret?: number; holdMissed?: number; holdCorrect?: number;
+  riskAdjustedReturn?: number;
+  paramVersionUsed?: number; notes?: string;
 }) {
   const db = await getDb();
   if (!db) return;
