@@ -7,6 +7,8 @@
  *   2. Fear & Greed Index (alternative.me)   — sentiment extremes
  *   3. US 10Y Treasury yield velocity        — risk-off detection via rate of change
  *   4. Spot ETF netflow 7D SMA (SosoValue)   — institutional flow momentum (best-effort)
+ *   5. IBIT 7D/14D volume ratio (Yahoo Fin.) — ETF demand proxy when SosoValue unavailable
+ *      Declining IBIT dollar volume near BTC highs = institutional demand drying up
  *
  * For each hourly bar it:
  *   a) Runs the existing indicator pipeline (RSI, MACD, BB, EMA, Z-score, CUSUM, Hurst, ADX)
@@ -70,7 +72,8 @@ interface ExternalPoint {
   fundingNegDivergence: boolean;       // rate flipped negative after sustained positive
   fearGreed:            number | null; // 0-100
   yieldVelocity:        number | null; // ppt/day, positive = yields rising
-  etfNetflow7dSma:      number | null; // USD millions/day, negative = net outflows
+  etfNetflow7dSma:      number | null; // USD millions/day, negative = net outflows (SosoValue)
+  ibitVolRatio:         number | null; // IBIT 7D/14D dollar-volume ratio (<0.75 = demand falling)
 }
 
 interface ReplayRow {
@@ -263,7 +266,7 @@ async function fetchEtfNetflow(): Promise<Map<string, number>> {
   const result = new Map<string, number>();
 
   // Try several known/guessed SosoValue endpoints — the API path changes without notice.
-  // If all fail, ETF signal is simply absent from this run.
+  // If all fail, ETF signal is simply absent; use the IBIT volume proxy below instead.
   const endpoints = [
     "https://sosovalue.com/api/en-us/bitcoin-etf/net-flow",
     "https://sosovalue.com/api/en-us/bitcoin-spot-etf/net-flow",
@@ -301,7 +304,73 @@ async function fetchEtfNetflow(): Promise<Map<string, number>> {
   }
 
   if (result.size === 0) {
-    console.warn("  ⚠ ETF netflow unavailable from all tried endpoints. Continuing without.");
+    console.warn("  ⚠ ETF netflow unavailable from all tried endpoints. Using IBIT proxy instead.");
+  }
+  return result;
+}
+
+// ─── IBIT Volume Proxy (ETF demand fallback) ──────────────────────────
+/**
+ * When SosoValue ETF flow data is unavailable, use IBIT's dollar-volume trend
+ * as a proxy for institutional ETF demand.
+ *
+ * Signal: compare the 7-day dollar-volume SMA to the 14-day SMA.
+ *   ratio < 0.75 → demand has dropped significantly (past week << prior week)
+ *   ratio < 0.85 → mild demand decline
+ *
+ * Combined with the near-high context filter in applyModifiers, this fires only
+ * when BTC is near its recent high and ETF buying interest is drying up —
+ * the classic pre-distribution pattern.
+ *
+ * Returns: Map<date, {vol7dSma, vol14dSma, ratio}> for lookup in getExternalAt.
+ */
+interface IbitDayMetrics { vol7dSma: number; vol14dSma: number; ratio: number; }
+
+async function fetchIbitVolumeProxy(days: number): Promise<Map<string, IbitDayMetrics>> {
+  console.log("Fetching IBIT daily data (ETF demand proxy)...");
+  const result = new Map<string, IbitDayMetrics>();
+  try {
+    const rangeParam = days <= 60 ? "2mo" : days <= 90 ? "3mo" : days <= 180 ? "6mo" : "1y";
+    const res = await fetch(
+      `https://query2.finance.yahoo.com/v8/finance/chart/IBIT?interval=1d&range=${rangeParam}`,
+      { headers: { "User-Agent": "Mozilla/5.0 (compatible; btc-backtest/1.0)" } }
+    );
+    if (!res.ok) throw new Error(`IBIT HTTP ${res.status}`);
+    const data = await res.json() as {
+      chart: { result?: Array<{
+        timestamp: number[];
+        indicators: { quote: Array<{ close: (number|null)[]; volume: (number|null)[] }> };
+      }> }
+    };
+    const chart = data.chart.result?.[0];
+    if (!chart) throw new Error("No IBIT chart result");
+
+    const { timestamp, indicators } = chart;
+    const q = indicators.quote[0];
+    // Compute daily dollar volume (price × shares traded), in billions
+    const days_data: { date: string; dollarVol: number }[] = [];
+    for (let i = 0; i < timestamp.length; i++) {
+      const c = q.close[i], v = q.volume[i];
+      if (!c || !v) continue;
+      days_data.push({
+        date: new Date(timestamp[i] * 1000).toISOString().slice(0, 10),
+        dollarVol: (c * v) / 1e9,  // billions
+      });
+    }
+
+    // Compute 7D and 14D rolling SMAs at each date
+    for (let i = 0; i < days_data.length; i++) {
+      const win7  = days_data.slice(Math.max(0, i - 6), i + 1).map(d => d.dollarVol);
+      const win14 = days_data.slice(Math.max(0, i - 13), i + 1).map(d => d.dollarVol);
+      if (win7.length < 5 || win14.length < 7) continue;  // need enough history
+      const vol7dSma  = win7.reduce((a, b) => a + b, 0)  / win7.length;
+      const vol14dSma = win14.reduce((a, b) => a + b, 0) / win14.length;
+      const ratio = vol7dSma / Math.max(0.001, vol14dSma);
+      result.set(days_data[i].date, { vol7dSma, vol14dSma, ratio });
+    }
+    console.log(`  Got ${result.size} days of IBIT volume metrics (${days_data.length} trading days)`);
+  } catch (e) {
+    console.warn(`  ⚠ IBIT proxy fetch failed: ${e}. ETF demand signal will be absent.`);
   }
   return result;
 }
@@ -319,6 +388,7 @@ function getExternalAt(
   fearGreed:     Map<string, number>,
   yields:        Map<string, YieldRecord>,
   etf:           Map<string, number>,
+  ibitProxy:     Map<string, IbitDayMetrics>,
   currentPrice:  number,
   rollingHigh14d: number,
 ): ExternalPoint {
@@ -355,7 +425,7 @@ function getExternalAt(
   const yieldRec = yields.get(date) ?? null;
   const yieldVelocity = yieldRec?.velocity ?? null;
 
-  // ETF netflow 7D SMA: average of the last 7 available daily values
+  // ETF netflow 7D SMA: average of the last 7 available daily values (SosoValue)
   let etfNetflow7dSma: number | null = null;
   if (etf.size > 0) {
     const window: number[] = [];
@@ -369,7 +439,16 @@ function getExternalAt(
     }
   }
 
-  return { fundingRate, fundingNegDivergence, fearGreed: fearGreedVal, yieldVelocity, etfNetflow7dSma };
+  // IBIT volume proxy: look up the pre-computed 7D/14D ratio for today's date.
+  // Falls back to previous trading day if today has no record (weekends/holidays).
+  let ibitVolRatio: number | null = null;
+  for (let d = 0; d < 5; d++) {
+    const day = new Date(ts - d * DAY_MS).toISOString().slice(0, 10);
+    const m = ibitProxy.get(day);
+    if (m !== undefined) { ibitVolRatio = m.ratio; break; }
+  }
+
+  return { fundingRate, fundingNegDivergence, fearGreed: fearGreedVal, yieldVelocity, etfNetflow7dSma, ibitVolRatio };
 }
 
 // ─── Signal Modifier ──────────────────────────────────────────────────
@@ -434,7 +513,7 @@ function applyModifiers(
     }
   }
 
-  // 5. ETF netflow 7D SMA — sustained institutional outflows
+  // 5. ETF netflow 7D SMA — sustained institutional outflows (SosoValue, when available)
   if (ext.etfNetflow7dSma !== null) {
     if (ext.etfNetflow7dSma < -300) {    // >$300M/day net outflow — heavy exit
       mSell *= 1.20;
@@ -442,6 +521,22 @@ function applyModifiers(
     } else if (ext.etfNetflow7dSma < -100) {   // >$100M/day — moderate exit
       mSell *= 1.10;
       mods.push(`ETF=${ext.etfNetflow7dSma.toFixed(0)}M/d[inst-exit×1.10]`);
+    }
+  }
+
+  // 6. IBIT volume proxy — institutional ETF demand drying up
+  //    IBIT 7D dollar-volume SMA vs 14D SMA: ratio <0.75 = demand fell sharply.
+  //    Combined with a near-high filter: a demand collapse near resistance suggests
+  //    distribution.  Applied when SosoValue data is absent OR as a complementary signal.
+  //    Does not fire during trending up-moves (high price + high volume = accumulation).
+  if (ext.ibitVolRatio !== null && ext.etfNetflow7dSma === null) {
+    if (ext.ibitVolRatio < 0.70) {       // 7D vol < 70% of 14D — significant demand drop
+      mSell *= 1.15;
+      mBuy  *= 0.90;
+      mods.push(`IBIT-vol=${ext.ibitVolRatio.toFixed(2)}[demand-dry×1.15]`);
+    } else if (ext.ibitVolRatio < 0.82) {  // 7D vol < 82% of 14D — moderate decline
+      mSell *= 1.08;
+      mods.push(`IBIT-vol=${ext.ibitVolRatio.toFixed(2)}[demand-soft×1.08]`);
     }
   }
 
@@ -487,27 +582,31 @@ async function main() {
   console.log(`${hr}\n`);
 
   // ── 1. Fetch all external data in parallel ──────────────────────────
-  const [candles, funding, fearGreed, yields, etfFlows] = await Promise.all([
+  // Candles must come first (used by IBIT proxy for BTC daily baseline if needed)
+  const [candles, funding, fearGreed, yields, etfFlows, ibitProxy] = await Promise.all([
     fetchAllCandles(WINDOW_DAYS),
     fetchFundingRates(WINDOW_DAYS),
     fetchFearGreed(WINDOW_DAYS),
     fetchYield10y(),
     fetchEtfNetflow(),
+    fetchIbitVolumeProxy(WINDOW_DAYS),
   ]);
 
   const avail = {
     candles:   candles.length,
-    funding:   funding.length > 0   ? `${funding.length} records ✓`  : "⚠ missing",
-    fearGreed: fearGreed.size > 0   ? `${fearGreed.size} days ✓`     : "⚠ missing",
-    yields:    yields.size > 0      ? `${yields.size} days ✓`        : "⚠ missing",
-    etf:       etfFlows.size > 0    ? `${etfFlows.size} days ✓`      : "⚠ missing (optional)",
+    funding:   funding.length > 0   ? `${funding.length} records ✓`     : "⚠ missing",
+    fearGreed: fearGreed.size > 0   ? `${fearGreed.size} days ✓`        : "⚠ missing",
+    yields:    yields.size > 0      ? `${yields.size} days ✓`           : "⚠ missing",
+    etf:       etfFlows.size > 0    ? `${etfFlows.size} days ✓`         : "⚠ missing (optional)",
+    ibit:      ibitProxy.size > 0   ? `${ibitProxy.size} days ✓ (proxy)`: "⚠ missing",
   };
   console.log(`\nData availability:`);
-  console.log(`  Candles:       ${avail.candles}`);
-  console.log(`  Funding rates: ${avail.funding}`);
-  console.log(`  Fear & Greed:  ${avail.fearGreed}`);
-  console.log(`  US10Y yield:   ${avail.yields}`);
-  console.log(`  ETF netflow:   ${avail.etf}`);
+  console.log(`  Candles:          ${avail.candles}`);
+  console.log(`  Funding rates:    ${avail.funding}`);
+  console.log(`  Fear & Greed:     ${avail.fearGreed}`);
+  console.log(`  US10Y yield:      ${avail.yields}`);
+  console.log(`  ETF netflow:      ${avail.etf}`);
+  console.log(`  IBIT vol proxy:   ${avail.ibit}`);
 
   const params: StrategyParameters = DEFAULT_STRATEGY_PARAMS;
   const rows: ReplayRow[] = [];
@@ -530,7 +629,7 @@ async function main() {
       .slice(highStart, i + 1)
       .reduce((mx, c) => Math.max(mx, c.close), 0);
 
-    const ext = getExternalAt(cur.openTime, funding, fearGreed, yields, etfFlows, cur.close, rollingHigh14d);
+    const ext = getExternalAt(cur.openTime, funding, fearGreed, yields, etfFlows, ibitProxy, cur.close, rollingHigh14d);
 
     const { modBuy, modSell, mods } = applyModifiers(base.rawBuyScore, base.rawSellScore, ext);
     const enh = signalFromScores(modBuy, modSell, params.minConfidence);
