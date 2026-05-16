@@ -26,10 +26,146 @@ import {
   HOLD_NOISE_THRESHOLD,
 } from "../shared/tradingTypes";
 import { notifyOwner } from "./_core/notification";
+import { applyExternalModifiers, signalFromScores, type ExternalSignals } from "./engine/externalModifiers";
 import * as db from "./db";
 
 let lastOptimizeHour = -1;
 let lastWeeklyReportDay = -1;
+
+// ─── External Signal Fetching ─────────────────────────────────────────
+/**
+ * Fetches all external market signals needed by applyExternalModifiers().
+ * Each source has a short timeout and fails gracefully — a missing signal
+ * simply omits that modifier rather than blocking the heartbeat.
+ *
+ * @param currentPrice  Latest BTC price (for funding divergence near-high check)
+ * @param candles       Recent 1h candles (used to compute rolling 14d high)
+ */
+async function fetchExternalSignals(
+  currentPrice: number,
+  candles: { close: number }[],
+): Promise<ExternalSignals> {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  // Rolling 14-day (336 1h candles) high for the funding divergence context filter
+  const highLookback = Math.min(336, candles.length);
+  const rollingHigh14d = candles
+    .slice(candles.length - highLookback)
+    .reduce((mx, c) => Math.max(mx, c.close), 0);
+
+  // ── Fetch all sources in parallel with individual timeouts ──────────
+  const [fundingRaw, fearGreedRaw, yieldRaw, ibitRaw] = await Promise.allSettled([
+
+    // 1. Bybit perpetual funding rate — last 2 records (need prev to detect flip)
+    fetch(
+      "https://api.bybit.com/v5/market/funding/history?category=linear&symbol=BTCUSDT&limit=2",
+      { signal: AbortSignal.timeout(6000) }
+    ).then(r => r.json()) as Promise<{
+      result?: { list?: Array<{ fundingRate: string; fundingRateTimestamp: string }> };
+    }>,
+
+    // 2. Fear & Greed — just today
+    fetch("https://api.alternative.me/fng/?limit=1", { signal: AbortSignal.timeout(6000) })
+      .then(r => r.json()) as Promise<{ data?: Array<{ value: string }> }>,
+
+    // 3. US 10Y yield — last 5 trading days (need 2 for velocity = daily change)
+    fetch(
+      "https://query2.finance.yahoo.com/v8/finance/chart/%5ETNX?interval=1d&range=5d",
+      {
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; btc-signal/1.0)" },
+        signal: AbortSignal.timeout(8000),
+      }
+    ).then(r => r.json()) as Promise<{
+      chart?: { result?: Array<{
+        timestamp: number[];
+        indicators: { quote: Array<{ close: (number | null)[] }> };
+      }> };
+    }>,
+
+    // 4. IBIT daily — 1 month for the 7-day rolling signed-flow proxy
+    fetch(
+      "https://query2.finance.yahoo.com/v8/finance/chart/IBIT?interval=1d&range=1mo",
+      {
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; btc-signal/1.0)" },
+        signal: AbortSignal.timeout(8000),
+      }
+    ).then(r => r.json()) as Promise<{
+      chart?: { result?: Array<{
+        timestamp: number[];
+        indicators: { quote: Array<{ close: (number|null)[]; volume: (number|null)[] }> };
+      }> };
+    }>,
+  ]);
+
+  // ── Parse funding rate ──────────────────────────────────────────────
+  let fundingRate: number | null = null;
+  let fundingNegDivergence = false;
+  if (fundingRaw.status === "fulfilled") {
+    const list = fundingRaw.value?.result?.list ?? [];
+    if (list.length >= 1) fundingRate = parseFloat(list[0].fundingRate);
+    if (fundingRate !== null && fundingRate < -0.00003 && list.length >= 2) {
+      const prevRate = parseFloat(list[1].fundingRate);
+      if (prevRate > 0 && currentPrice >= rollingHigh14d * 0.95) {
+        fundingNegDivergence = true;
+      }
+    }
+  }
+
+  // ── Parse Fear & Greed ──────────────────────────────────────────────
+  let fearGreed: number | null = null;
+  if (fearGreedRaw.status === "fulfilled") {
+    const val = fearGreedRaw.value?.data?.[0]?.value;
+    if (val !== undefined) fearGreed = parseInt(val, 10);
+  }
+
+  // ── Parse yield velocity ────────────────────────────────────────────
+  let yieldVelocity: number | null = null;
+  if (yieldRaw.status === "fulfilled") {
+    const result = yieldRaw.value?.chart?.result?.[0];
+    if (result) {
+      const closes = result.indicators.quote[0].close.filter((v): v is number => v !== null);
+      if (closes.length >= 2) {
+        yieldVelocity = closes[closes.length - 1] - closes[closes.length - 2];
+      }
+    }
+  }
+
+  // ── Parse IBIT 7-day signed-flow proxy ─────────────────────────────
+  let ibitFlow7d: number | null = null;
+  if (ibitRaw.status === "fulfilled") {
+    const result = ibitRaw.value?.chart?.result?.[0];
+    if (result) {
+      const ts  = result.timestamp;
+      const q   = result.indicators.quote[0];
+      // Build daily signed-flow values (sign(return) × dollar_volume in $M)
+      const dailyFlows: number[] = [];
+      for (let i = 1; i < ts.length; i++) {
+        const c    = q.close[i],   cp = q.close[i - 1];
+        const v    = q.volume[i];
+        if (!c || !cp || !v) continue;
+        const ret  = (c - cp) / cp;
+        dailyFlows.push(Math.sign(ret) * (c * v) / 1e6);
+      }
+      // 7D rolling sum of the most recent 7 trading days
+      if (dailyFlows.length >= 7) {
+        ibitFlow7d = dailyFlows.slice(-7).reduce((a, b) => a + b, 0);
+      }
+    }
+  }
+
+  // Log summary — shows what fired and what was unavailable
+  const parts = [
+    `funding=${fundingRate !== null ? (fundingRate * 100).toFixed(4) + "%" : "n/a"}`,
+    `F&G=${fearGreed ?? "n/a"}`,
+    `US10Y_vel=${yieldVelocity !== null ? yieldVelocity.toFixed(3) + "ppt" : "n/a"}`,
+    `IBIT-7d=${ibitFlow7d !== null ? "$" + ibitFlow7d.toFixed(0) + "M" : "n/a"}`,
+  ];
+  console.log(`[External] ${parts.join("  ")}`);
+
+  // etfNetflow7dSma is always null in the heartbeat — SosoValue is blocked by Cloudflare.
+  // The IBIT proxy above handles the ETF demand signal instead.
+  return { fundingRate, fundingNegDivergence, fearGreed, yieldVelocity, etfNetflow7dSma: null, ibitFlow7d };
+}
 /** Timestamp (ms) of the last successful signal generation run. Used for schedule throttle. */
 let lastSignalRunTs = 0;
 /** Rolling buffer of the last 2 non-hold signal directions for confirmation. */
@@ -142,37 +278,59 @@ async function runSignalGeneration(candleInterval = "1h") {
 
     const simStateBefore = await db.getSimulatorState();
 
+    // Fetch external market signals once — shared across all variants.
+    // Fails gracefully: missing data means that modifier simply doesn't fire.
+    const ext = await fetchExternalSignals(baseMetrics.price, candleData);
+
     // Generate signals for all variants in parallel-conceptually (no I/O between them).
+    // External modifiers are applied identically to all variants so the champion-challenger
+    // comparison tests indicator parameter sensitivity under the same external context.
     // Only champion's signal mutates the portfolio + sends notifications.
     let championSignal: { signal: "buy" | "sell" | "hold"; confidence: number; reasoning: string } | null = null;
     let championSignalId: number | undefined;
     let championMetrics: AllMetrics = baseMetrics;
     let championAppliedParams = championParams;
+    let championMods: string[] = [];
 
     for (const variant of STRATEGY_VARIANTS) {
       const variantParams: StrategyParameters =
         variant === "champion" ? championParams : deriveChallengerParams(championParams, variant);
       const variantMetrics = metricsForVariant(baseMetrics, variantParams);
-      const sig = generateSignal(variantMetrics, variantParams);
+      const baseSig = generateSignal(variantMetrics, variantParams);
+
+      // Apply external modifiers to the raw scores, then re-evaluate the signal
+      const { modBuy, modSell, mods } = applyExternalModifiers(
+        baseSig.rawBuyScore,
+        baseSig.rawSellScore,
+        ext,
+      );
+      const enhanced = signalFromScores(modBuy, modSell, variantParams.minConfidence);
+
+      // Store the enhanced signal; append modifier list to reasoning for audit trail
+      const enhancedReasoning = mods.length > 0
+        ? `${baseSig.reasoning}\n\n── External modifiers ──\n${mods.join("\n")}`
+        : baseSig.reasoning;
 
       const insertId = await db.insertSignal({
         ts,
-        signal: sig.signal,
+        signal: enhanced.signal,
         price: variantMetrics.price,
-        confidence: sig.confidence,
-        reasoning: sig.reasoning,
+        confidence: enhanced.confidence,
+        reasoning: enhancedReasoning,
         metricsSnapshot: variantMetrics,
         portfolioValue: simStateBefore?.totalValueUsd,
         strategyVariant: variant,
       });
 
       if (variant === "champion") {
-        championSignal = sig;
+        championSignal = { signal: enhanced.signal, confidence: enhanced.confidence, reasoning: enhancedReasoning };
         championSignalId = insertId ?? undefined;
         championMetrics = variantMetrics;
         championAppliedParams = variantParams;
+        championMods = mods;
       } else {
-        console.log(`[Heartbeat] Shadow ${variant}: ${sig.signal} (conf ${(sig.confidence * 100).toFixed(0)}%)`);
+        const flip = baseSig.signal !== enhanced.signal ? ` (base: ${baseSig.signal})` : "";
+        console.log(`[Heartbeat] Shadow ${variant}: ${enhanced.signal}${flip} (conf ${(enhanced.confidence * 100).toFixed(0)}%)`);
       }
     }
 
@@ -268,12 +426,16 @@ async function runSignalGeneration(candleInterval = "1h") {
 
           const emoji = signal.signal === "buy" ? "🟢" : "🔴";
           const reasoning = escapeHtml(signal.reasoning.substring(0, 500));
+          const modLine = championMods.length > 0
+            ? `\n🔧 <b>Modifiers:</b> <code>${escapeHtml(championMods.join("  "))}</code>\n`
+            : "";
           const msg =
             `${emoji} <b>BTC ${signal.signal.toUpperCase()} Signal</b>\n\n` +
             `💰 Price: $${metrics.price.toFixed(2)}\n` +
             `📊 Confidence: ${(signal.confidence * 100).toFixed(0)}%\n` +
-            `💼 Portfolio: $${simState?.totalValueUsd?.toFixed(2) ?? "N/A"}\n\n` +
-            `📝 <b>Reasoning:</b>\n<code>${reasoning}</code>`;
+            `💼 Portfolio: $${simState?.totalValueUsd?.toFixed(2) ?? "N/A"}\n` +
+            modLine +
+            `\n📝 <b>Reasoning:</b>\n<code>${reasoning}</code>`;
 
           const tgRes = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
             method: "POST",

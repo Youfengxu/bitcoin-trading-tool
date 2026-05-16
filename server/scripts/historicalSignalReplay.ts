@@ -37,6 +37,8 @@
 import { computeAllMetrics } from "../engine/technicalAnalysis";
 import { generateSignal } from "../engine/signalGenerator";
 import { fetchCandlesFrom } from "../engine/marketData";
+import { applyExternalModifiers, signalFromScores } from "../engine/externalModifiers";
+import type { ExternalSignals } from "../engine/externalModifiers";
 import { DEFAULT_STRATEGY_PARAMS } from "../../shared/tradingTypes";
 import type { StrategyParameters } from "../../shared/tradingTypes";
 import * as fs from "fs";
@@ -67,14 +69,9 @@ interface YieldRecord {
   velocity: number;  // daily change in percentage points, e.g. 0.12 = 12bps
 }
 
-interface ExternalPoint {
-  fundingRate:          number | null;
-  fundingNegDivergence: boolean;       // rate flipped negative after sustained positive
-  fearGreed:            number | null; // 0-100
-  yieldVelocity:        number | null; // ppt/day, positive = yields rising
-  etfNetflow7dSma:      number | null; // USD millions/day, negative = net outflows (SosoValue)
-  ibitVolRatio:         number | null; // IBIT 7D/14D dollar-volume ratio (<0.75 = demand falling)
-}
+// ExternalPoint is now ExternalSignals from the shared engine module.
+// The replay script uses the same type so backtest results are directly comparable
+// to what the production heartbeat computes.
 
 interface ReplayRow {
   ts:           number;
@@ -86,7 +83,7 @@ interface ReplayRow {
   baseRawBuy:   number;
   baseRawSell:  number;
   // External
-  ext:          ExternalPoint;
+  ext:          ExternalSignals;
   modifiers:    string[];
   // Enhanced
   enhSignal:    "buy" | "sell" | "hold";
@@ -309,27 +306,24 @@ async function fetchEtfNetflow(): Promise<Map<string, number>> {
   return result;
 }
 
-// ─── IBIT Volume Proxy (ETF demand fallback) ──────────────────────────
+// ─── IBIT Signed-Flow Proxy ───────────────────────────────────────────
 /**
- * When SosoValue ETF flow data is unavailable, use IBIT's dollar-volume trend
- * as a proxy for institutional ETF demand.
+ * Computes the IBIT 7-day rolling signed-flow proxy for each trading date.
  *
- * Signal: compare the 7-day dollar-volume SMA to the 14-day SMA.
- *   ratio < 0.75 → demand has dropped significantly (past week << prior week)
- *   ratio < 0.85 → mild demand decline
+ * signed_flow_day = sign(IBIT daily return) × IBIT dollar volume ($M)
+ * ibitFlow7d[date] = sum of signed_flow over the 7 trading days up to and including date
  *
- * Combined with the near-high context filter in applyModifiers, this fires only
- * when BTC is near its recent high and ETF buying interest is drying up —
- * the classic pre-distribution pattern.
+ * Positive = net institutional demand (buy regime); negative = net selling.
+ * Direction tracks Farside-reported actual flows; magnitude is ~5× larger because
+ * full dollar volume (not just net creation/redemption) is used.
  *
- * Returns: Map<date, {vol7dSma, vol14dSma, ratio}> for lookup in getExternalAt.
+ * Returns Map<date, flow7d_in_$M> for forward-filling into hourly bars via getExternalAt.
  */
-interface IbitDayMetrics { vol7dSma: number; vol14dSma: number; ratio: number; }
-
-async function fetchIbitVolumeProxy(days: number): Promise<Map<string, IbitDayMetrics>> {
-  console.log("Fetching IBIT daily data (ETF demand proxy)...");
-  const result = new Map<string, IbitDayMetrics>();
+async function fetchIbitSignedFlowProxy(days: number): Promise<Map<string, number>> {
+  console.log("Fetching IBIT daily data (signed-flow ETF proxy)...");
+  const result = new Map<string, number>();
   try {
+    // Fetch extra history so the first window has 7 complete prior days
     const rangeParam = days <= 60 ? "2mo" : days <= 90 ? "3mo" : days <= 180 ? "6mo" : "1y";
     const res = await fetch(
       `https://query2.finance.yahoo.com/v8/finance/chart/IBIT?interval=1d&range=${rangeParam}`,
@@ -347,68 +341,66 @@ async function fetchIbitVolumeProxy(days: number): Promise<Map<string, IbitDayMe
 
     const { timestamp, indicators } = chart;
     const q = indicators.quote[0];
-    // Compute daily dollar volume (price × shares traded), in billions
-    const days_data: { date: string; dollarVol: number }[] = [];
-    for (let i = 0; i < timestamp.length; i++) {
-      const c = q.close[i], v = q.volume[i];
-      if (!c || !v) continue;
-      days_data.push({
-        date: new Date(timestamp[i] * 1000).toISOString().slice(0, 10),
-        dollarVol: (c * v) / 1e9,  // billions
+
+    // Build daily signed-flow series
+    const daily: { date: string; signedFlow: number }[] = [];
+    for (let i = 1; i < timestamp.length; i++) {
+      const c  = q.close[i],    cp = q.close[i - 1];
+      const v  = q.volume[i];
+      if (!c || !cp || !v) continue;
+      const ret = (c - cp) / cp;
+      daily.push({
+        date:       new Date(timestamp[i] * 1000).toISOString().slice(0, 10),
+        signedFlow: Math.sign(ret) * (c * v) / 1e6,  // $M
       });
     }
 
-    // Compute 7D and 14D rolling SMAs at each date
-    for (let i = 0; i < days_data.length; i++) {
-      const win7  = days_data.slice(Math.max(0, i - 6), i + 1).map(d => d.dollarVol);
-      const win14 = days_data.slice(Math.max(0, i - 13), i + 1).map(d => d.dollarVol);
-      if (win7.length < 5 || win14.length < 7) continue;  // need enough history
-      const vol7dSma  = win7.reduce((a, b) => a + b, 0)  / win7.length;
-      const vol14dSma = win14.reduce((a, b) => a + b, 0) / win14.length;
-      const ratio = vol7dSma / Math.max(0.001, vol14dSma);
-      result.set(days_data[i].date, { vol7dSma, vol14dSma, ratio });
+    // Rolling 7-day sum
+    for (let i = 6; i < daily.length; i++) {
+      const sum7 = daily.slice(i - 6, i + 1).reduce((a, b) => a + b.signedFlow, 0);
+      result.set(daily[i].date, sum7);
     }
-    console.log(`  Got ${result.size} days of IBIT volume metrics (${days_data.length} trading days)`);
+    console.log(`  Got ${result.size} days of IBIT signed-flow data (${daily.length} trading days)`);
   } catch (e) {
-    console.warn(`  ⚠ IBIT proxy fetch failed: ${e}. ETF demand signal will be absent.`);
+    console.warn(`  ⚠ IBIT signed-flow fetch failed: ${e}. ETF demand signal will be absent.`);
   }
   return result;
 }
 
 // ─── External Data Alignment ──────────────────────────────────────────
 /**
- * @param currentPrice  Close price of the current bar — used for the near-high context filter.
- * @param rollingHigh14d  Max close over the past 14 days — funding divergence only fires when
- *                        price is within 5% of this high (i.e. near resistance), suppressing
- *                        false alarms during mid-rally consolidation.
+ * Aligns external data streams to a specific hourly bar timestamp.
+ * Returns an ExternalSignals object (shared type from engine/externalModifiers.ts)
+ * ready to be passed to applyExternalModifiers().
+ *
+ * @param currentPrice    Close price of the bar — used for funding divergence near-high filter
+ * @param rollingHigh14d  Max close over 14 days — funding divergence only fires within 5% of this
+ * @param ibitFlows       Map<date, ibitFlow7d_$M> from fetchIbitSignedFlowProxy()
  */
 function getExternalAt(
-  ts: number,
-  funding:       FundingRecord[],
-  fearGreed:     Map<string, number>,
-  yields:        Map<string, YieldRecord>,
-  etf:           Map<string, number>,
-  ibitProxy:     Map<string, IbitDayMetrics>,
-  currentPrice:  number,
+  ts:             number,
+  funding:        FundingRecord[],
+  fearGreed:      Map<string, number>,
+  yields:         Map<string, YieldRecord>,
+  etf:            Map<string, number>,
+  ibitFlows:      Map<string, number>,
+  currentPrice:   number,
   rollingHigh14d: number,
-): ExternalPoint {
+): ExternalSignals {
   const date = new Date(ts).toISOString().slice(0, 10);
 
-  // Funding: most recent record at or before ts (forward-fill from 8h settlements)
+  // Funding: forward-fill from 8h settlement records
   let fundingRate: number | null = null;
   for (const r of funding) {
     if (r.ts <= ts) fundingRate = r.rate;
     else break;
   }
 
-  // Negative divergence: rate flipped to < -0.003%/8h after being positive.
-  // Context filter: only fire when price is within 5% of the 14-day rolling high.
-  // Without this guard the signal fires during normal mid-rally pauses where
-  // negative funding is routine (shorts briefly overcrowded before squeezing up).
+  // Funding negative divergence: rate flipped below -0.003%/8h after being positive,
+  // and price is within 5% of the 14-day rolling high (near resistance).
   let fundingNegDivergence = false;
   if (fundingRate !== null && fundingRate < -0.00003) {
-    const nearHigh = currentPrice >= rollingHigh14d * 0.95;
-    if (nearHigh) {
+    if (currentPrice >= rollingHigh14d * 0.95) {
       let prevRate: number | null = null;
       for (const r of funding) {
         if (r.ts < ts - 8 * 3600000) prevRate = r.rate;
@@ -418,14 +410,14 @@ function getExternalAt(
     }
   }
 
-  // Fear & Greed: look up by date (daily)
+  // Fear & Greed: daily lookup (forward-fill)
   const fearGreedVal = fearGreed.get(date) ?? null;
 
-  // Yield velocity: look up by date (daily)
-  const yieldRec = yields.get(date) ?? null;
+  // Yield velocity: daily lookup
+  const yieldRec      = yields.get(date) ?? null;
   const yieldVelocity = yieldRec?.velocity ?? null;
 
-  // ETF netflow 7D SMA: average of the last 7 available daily values (SosoValue)
+  // ETF netflow 7D SMA (SosoValue — best-effort, usually null)
   let etfNetflow7dSma: number | null = null;
   if (etf.size > 0) {
     const window: number[] = [];
@@ -439,124 +431,19 @@ function getExternalAt(
     }
   }
 
-  // IBIT volume proxy: look up the pre-computed 7D/14D ratio for today's date.
-  // Falls back to previous trading day if today has no record (weekends/holidays).
-  let ibitVolRatio: number | null = null;
+  // IBIT signed-flow proxy: forward-fill (weekends/holidays use prior trading day)
+  let ibitFlow7d: number | null = null;
   for (let d = 0; d < 5; d++) {
     const day = new Date(ts - d * DAY_MS).toISOString().slice(0, 10);
-    const m = ibitProxy.get(day);
-    if (m !== undefined) { ibitVolRatio = m.ratio; break; }
+    const v = ibitFlows.get(day);
+    if (v !== undefined) { ibitFlow7d = v; break; }
   }
 
-  return { fundingRate, fundingNegDivergence, fearGreed: fearGreedVal, yieldVelocity, etfNetflow7dSma, ibitVolRatio };
+  return { fundingRate, fundingNegDivergence, fearGreed: fearGreedVal, yieldVelocity, etfNetflow7dSma, ibitFlow7d };
 }
 
-// ─── Signal Modifier ──────────────────────────────────────────────────
-/**
- * Adjusts raw buy/sell scores based on external market signals.
- *
- * Modifier design principles:
- *   - Modifiers are multiplicative on the raw scores, consistent with how the
- *     existing CUSUM (×1.2) and volume (×1.15) boosts work in the signal generator.
- *   - They amplify a directional lean already present in the indicators; they
- *     cannot manufacture a signal from a perfectly neutral indicator reading.
- *   - Thresholds are first-principles values, not fitted to this dataset.
- */
-function applyModifiers(
-  rawBuy:  number,
-  rawSell: number,
-  ext:     ExternalPoint,
-): { modBuy: number; modSell: number; mods: string[] } {
-  let mBuy  = rawBuy;
-  let mSell = rawSell;
-  const mods: string[] = [];
-
-  // 1. Funding rate — positive (overcrowded longs): sell bias
-  if (ext.fundingRate !== null) {
-    if (ext.fundingRate > 0.001) {           // >0.10%/8h — extreme long crowding
-      mSell *= 1.25;
-      mBuy  *= 0.85;
-      mods.push(`fund=+${(ext.fundingRate * 100).toFixed(3)}%/8h[extreme×1.25]`);
-    } else if (ext.fundingRate > 0.0005) {   // >0.05%/8h — elevated long bias
-      mSell *= 1.10;
-      mods.push(`fund=+${(ext.fundingRate * 100).toFixed(3)}%/8h[long×1.10]`);
-    }
-  }
-
-  // 2. Negative funding divergence — rate flipped negative: smart money building shorts
-  if (ext.fundingNegDivergence) {
-    mSell *= 1.15;
-    mods.push(`fund-flip-neg[smart-short×1.15]`);
-  }
-
-  // 3. Fear & Greed — extreme readings
-  if (ext.fearGreed !== null) {
-    if (ext.fearGreed >= 80) {   // Extreme Greed — historically precedes corrections
-      mBuy  *= 0.80;
-      mSell *= 1.10;
-      mods.push(`F&G=${ext.fearGreed}[greed buy×0.80 sell×1.10]`);
-    } else if (ext.fearGreed <= 20) {   // Extreme Fear — better buy zone
-      mSell *= 0.85;
-      mods.push(`F&G=${ext.fearGreed}[fear sell×0.85]`);
-    }
-  }
-
-  // 4. Yield velocity — sharp yield spike = capital rotation out of risk assets
-  if (ext.yieldVelocity !== null) {
-    if (ext.yieldVelocity > 0.15) {     // >15bps/day — significant risk-off
-      mSell *= 1.15;
-      mBuy  *= 0.90;
-      mods.push(`US10Y+${ext.yieldVelocity.toFixed(2)}bps[risk-off×1.15]`);
-    } else if (ext.yieldVelocity > 0.08) {  // >8bps/day — moderate risk-off
-      mSell *= 1.08;
-      mods.push(`US10Y+${ext.yieldVelocity.toFixed(2)}bps[risk-off×1.08]`);
-    }
-  }
-
-  // 5. ETF netflow 7D SMA — sustained institutional outflows (SosoValue, when available)
-  if (ext.etfNetflow7dSma !== null) {
-    if (ext.etfNetflow7dSma < -300) {    // >$300M/day net outflow — heavy exit
-      mSell *= 1.20;
-      mods.push(`ETF=${ext.etfNetflow7dSma.toFixed(0)}M/d[inst-exit×1.20]`);
-    } else if (ext.etfNetflow7dSma < -100) {   // >$100M/day — moderate exit
-      mSell *= 1.10;
-      mods.push(`ETF=${ext.etfNetflow7dSma.toFixed(0)}M/d[inst-exit×1.10]`);
-    }
-  }
-
-  // 6. IBIT volume proxy — institutional ETF demand drying up
-  //    IBIT 7D dollar-volume SMA vs 14D SMA: ratio <0.75 = demand fell sharply.
-  //    Combined with a near-high filter: a demand collapse near resistance suggests
-  //    distribution.  Applied when SosoValue data is absent OR as a complementary signal.
-  //    Does not fire during trending up-moves (high price + high volume = accumulation).
-  if (ext.ibitVolRatio !== null && ext.etfNetflow7dSma === null) {
-    if (ext.ibitVolRatio < 0.70) {       // 7D vol < 70% of 14D — significant demand drop
-      mSell *= 1.15;
-      mBuy  *= 0.90;
-      mods.push(`IBIT-vol=${ext.ibitVolRatio.toFixed(2)}[demand-dry×1.15]`);
-    } else if (ext.ibitVolRatio < 0.82) {  // 7D vol < 82% of 14D — moderate decline
-      mSell *= 1.08;
-      mods.push(`IBIT-vol=${ext.ibitVolRatio.toFixed(2)}[demand-soft×1.08]`);
-    }
-  }
-
-  return { modBuy: mBuy, modSell: mSell, mods };
-}
-
-// ─── Re-evaluate Signal from Raw Scores ──────────────────────────────
-function signalFromScores(
-  buy: number,
-  sell: number,
-  minConf: number,
-): { signal: "buy" | "sell" | "hold"; confidence: number } {
-  if (buy > sell && buy >= minConf) {
-    return { signal: "buy", confidence: Math.min(1, buy) };
-  } else if (sell > buy && sell >= minConf) {
-    return { signal: "sell", confidence: Math.min(1, sell) };
-  } else {
-    return { signal: "hold", confidence: 1 - Math.max(buy, sell) };
-  }
-}
+// applyExternalModifiers and signalFromScores are imported from engine/externalModifiers.ts
+// so that replay and production use identical logic and thresholds.
 
 // ─── Formatting Helpers ───────────────────────────────────────────────
 function sleep(ms: number) { return new Promise<void>(r => setTimeout(r, ms)); }
@@ -582,31 +469,30 @@ async function main() {
   console.log(`${hr}\n`);
 
   // ── 1. Fetch all external data in parallel ──────────────────────────
-  // Candles must come first (used by IBIT proxy for BTC daily baseline if needed)
-  const [candles, funding, fearGreed, yields, etfFlows, ibitProxy] = await Promise.all([
+  const [candles, funding, fearGreed, yields, etfFlows, ibitFlows] = await Promise.all([
     fetchAllCandles(WINDOW_DAYS),
     fetchFundingRates(WINDOW_DAYS),
     fetchFearGreed(WINDOW_DAYS),
     fetchYield10y(),
     fetchEtfNetflow(),
-    fetchIbitVolumeProxy(WINDOW_DAYS),
+    fetchIbitSignedFlowProxy(WINDOW_DAYS),
   ]);
 
   const avail = {
     candles:   candles.length,
-    funding:   funding.length > 0   ? `${funding.length} records ✓`     : "⚠ missing",
-    fearGreed: fearGreed.size > 0   ? `${fearGreed.size} days ✓`        : "⚠ missing",
-    yields:    yields.size > 0      ? `${yields.size} days ✓`           : "⚠ missing",
-    etf:       etfFlows.size > 0    ? `${etfFlows.size} days ✓`         : "⚠ missing (optional)",
-    ibit:      ibitProxy.size > 0   ? `${ibitProxy.size} days ✓ (proxy)`: "⚠ missing",
+    funding:   funding.length > 0   ? `${funding.length} records ✓`        : "⚠ missing",
+    fearGreed: fearGreed.size > 0   ? `${fearGreed.size} days ✓`           : "⚠ missing",
+    yields:    yields.size > 0      ? `${yields.size} days ✓`              : "⚠ missing",
+    etf:       etfFlows.size > 0    ? `${etfFlows.size} days ✓`            : "⚠ missing (optional)",
+    ibit:      ibitFlows.size > 0   ? `${ibitFlows.size} days ✓ (signed-flow proxy)` : "⚠ missing",
   };
   console.log(`\nData availability:`);
-  console.log(`  Candles:          ${avail.candles}`);
-  console.log(`  Funding rates:    ${avail.funding}`);
-  console.log(`  Fear & Greed:     ${avail.fearGreed}`);
-  console.log(`  US10Y yield:      ${avail.yields}`);
-  console.log(`  ETF netflow:      ${avail.etf}`);
-  console.log(`  IBIT vol proxy:   ${avail.ibit}`);
+  console.log(`  Candles:               ${avail.candles}`);
+  console.log(`  Funding rates:         ${avail.funding}`);
+  console.log(`  Fear & Greed:          ${avail.fearGreed}`);
+  console.log(`  US10Y yield:           ${avail.yields}`);
+  console.log(`  ETF netflow (SosoVal): ${avail.etf}`);
+  console.log(`  IBIT signed-flow:      ${avail.ibit}`);
 
   const params: StrategyParameters = DEFAULT_STRATEGY_PARAMS;
   const rows: ReplayRow[] = [];
@@ -629,9 +515,9 @@ async function main() {
       .slice(highStart, i + 1)
       .reduce((mx, c) => Math.max(mx, c.close), 0);
 
-    const ext = getExternalAt(cur.openTime, funding, fearGreed, yields, etfFlows, ibitProxy, cur.close, rollingHigh14d);
+    const ext = getExternalAt(cur.openTime, funding, fearGreed, yields, etfFlows, ibitFlows, cur.close, rollingHigh14d);
 
-    const { modBuy, modSell, mods } = applyModifiers(base.rawBuyScore, base.rawSellScore, ext);
+    const { modBuy, modSell, mods } = applyExternalModifiers(base.rawBuyScore, base.rawSellScore, ext);
     const enh = signalFromScores(modBuy, modSell, params.minConfidence);
 
     // 24h outcome — price 24 candles ahead
