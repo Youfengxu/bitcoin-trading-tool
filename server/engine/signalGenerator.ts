@@ -5,6 +5,16 @@ export interface SignalOutput {
   signal: "buy" | "sell" | "hold";
   confidence: number;
   reasoning: string;
+  /**
+   * Raw weighted buy score before threshold comparison.
+   * Exposed so external modifier scripts can adjust and re-evaluate without
+   * re-running the full indicator pipeline.
+   */
+  rawBuyScore: number;
+  /**
+   * Raw weighted sell score before threshold comparison.
+   */
+  rawSellScore: number;
 }
 
 interface SignalComponent {
@@ -260,5 +270,5 @@ export function generateSignal(
 
   const reasoning = [summary, "", "Component Analysis:", ...reasoningParts].join("\n");
 
-  return { signal, confidence, reasoning };
+  return { signal, confidence, reasoning, rawBuyScore: finalBuy, rawSellScore: finalSell };
 }

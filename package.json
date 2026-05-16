@@ -11,7 +11,9 @@
     "format": "prettier --write .",
     "test": "vitest run",
     "db:push": "drizzle-kit migrate",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "replay": "tsx server/scripts/historicalSignalReplay.ts",
+    "replay:82k": "tsx server/scripts/historicalSignalReplay.ts --days=90 --price=82000"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.693.0",
