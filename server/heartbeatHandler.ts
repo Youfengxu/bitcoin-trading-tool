@@ -259,15 +259,38 @@ async function runSignalGeneration(candleInterval = "1h") {
       const chatId = process.env.TELEGRAM_CHAT_ID;
       if (token && chatId) {
         try {
-          const msg = `🔔 *BTC ${signal.signal.toUpperCase()} Signal*\n\n💰 Price: $${metrics.price.toFixed(2)}\n📊 Portfolio: $${simState?.totalValueUsd?.toFixed(2) ?? "N/A"}\n\n📝 Reasoning:\n${signal.reasoning.substring(0, 500)}`;
-          await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+          // Use HTML parse mode — the reasoning text contains [RSI], [MACD], etc. which
+          // break Telegram's Markdown parser (bare square brackets are link syntax in Markdown).
+          // HTML mode only interprets explicit <b>, <i>, <code> tags and is safe with
+          // arbitrary text as long as we escape < > & in the reasoning body.
+          const escapeHtml = (s: string) =>
+            s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+          const emoji = signal.signal === "buy" ? "🟢" : "🔴";
+          const reasoning = escapeHtml(signal.reasoning.substring(0, 500));
+          const msg =
+            `${emoji} <b>BTC ${signal.signal.toUpperCase()} Signal</b>\n\n` +
+            `💰 Price: $${metrics.price.toFixed(2)}\n` +
+            `📊 Confidence: ${(signal.confidence * 100).toFixed(0)}%\n` +
+            `💼 Portfolio: $${simState?.totalValueUsd?.toFixed(2) ?? "N/A"}\n\n` +
+            `📝 <b>Reasoning:</b>\n<code>${reasoning}</code>`;
+
+          const tgRes = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "Markdown" }),
+            body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML" }),
           });
+          if (!tgRes.ok) {
+            const detail = await tgRes.text().catch(() => "");
+            console.warn(`[Heartbeat] Telegram rejected message (${tgRes.status}): ${detail}`);
+          } else {
+            console.log(`[Heartbeat] Telegram notified: ${signal.signal.toUpperCase()} @ $${metrics.price.toFixed(0)}`);
+          }
         } catch (e) {
           console.warn("[Heartbeat] Telegram failed:", e);
         }
+      } else {
+        console.log("[Heartbeat] Telegram skipped — TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set.");
       }
     }
 

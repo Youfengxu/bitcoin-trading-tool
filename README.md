@@ -138,6 +138,18 @@ The strategy parameters are tuned by three independent mechanisms:
 
 ## Work in Progress
 
+### Spot ETF Netflow Signal
+
+Integrate daily BTC spot ETF net flow data (creation baskets minus redemption baskets) as an external sell modifier. When the 7-day SMA of net flows turns negative, authorized participants are selling BTC to cover redemptions — structural sell pressure that precedes price declines. Primary source: SosoValue or Farside Investors (HTML scrape). Currently blocked by Cloudflare on all known SosoValue endpoints. IBIT volume magnitude was evaluated as a proxy but is directionally ambiguous (volume is high at both peaks and bottoms) and does not add signal.
+
+**Planned modifier**: 7D SMA < −$300M/day → sell ×1.20; < −$100M → sell ×1.10.
+
+### Options Max Pain
+
+On Bitcoin options expiry Fridays (Deribit), the spot price gravitates toward the strike price that minimises aggregate options payout (max pain). This is a short-term magnet effect: if BTC is trading significantly above max pain near expiry, downside risk is elevated. Deribit has a public API (`/api/v2/public/get_book_summary_by_currency`) that can surface the expiry-weighted max pain strike. **Not yet implemented** — requires computing the pain function across the full strike surface, which is a small but non-trivial data pipeline.
+
+**Planned modifier**: price > max_pain × 1.05 and expiry within 48h → sell ×1.15.
+
 ### Regime-Conditional Parameters
 
 Maintain three parameter sets keyed by the Hurst regime detected on each heartbeat (`H > 0.6` = trending, `0.45–0.6` = random walk, `< 0.45` = mean-reverting). The walk-forward optimizer runs per-regime, using only historical candles where that regime held. At signal time, route through the param set matching current Hurst. Defer until Phase 2 has accumulated enough per-regime data — otherwise each regime learns from too few samples.
