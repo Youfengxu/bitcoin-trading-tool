@@ -95,35 +95,67 @@ interface ReplayRow {
 }
 
 // ─── Candle Fetching ──────────────────────────────────────────────────
+/**
+ * Fetch historical 1h OHLCV candles for the replay window.
+ *
+ * Kraken's OHLC endpoint silently ignores `since` values older than ~30 days
+ * and returns its most recent 720 candles regardless.  Yahoo Finance supports
+ * arbitrary ranges (range=3mo → ~2160 1h bars) and is used as the primary
+ * source for windows longer than 30 days.  Kraken is the fallback for shorter
+ * windows or when Yahoo Finance is unreachable.
+ */
 async function fetchAllCandles(days: number): Promise<CandleRow[]> {
-  console.log(`Fetching ${days} days of 1h candles from Kraken (720/page)...`);
-  const pagesNeeded = Math.ceil(days / 30);
-  const all: CandleRow[] = [];
-  let nextSince = Date.now() - days * DAY_MS;
-
-  for (let page = 0; page < pagesNeeded; page++) {
-    const raw = await fetchCandlesFrom("1h", nextSince, 720);
-    if (raw.length === 0) break;
-    all.push(...raw.map(c => ({
-      open: c.open, high: c.high, low: c.low,
-      close: c.close, volume: c.volume, openTime: c.openTime,
-    })));
-    nextSince = raw[raw.length - 1].openTime + 1;
-    const last = new Date(raw[raw.length - 1].openTime).toISOString().slice(0, 13);
-    console.log(`  Page ${page + 1}: ${raw.length} candles → ${last}`);
-    if (page < pagesNeeded - 1) await sleep(800); // avoid rate limiting
+  // ── Yahoo Finance (primary for >30d windows) ───────────────────────
+  if (days > 30) {
+    console.log(`Fetching ${days} days of 1h candles from Yahoo Finance...`);
+    try {
+      const rangeParam = days <= 60 ? "2mo" : days <= 90 ? "3mo" : days <= 180 ? "6mo" : "1y";
+      const res = await fetch(
+        `https://query2.finance.yahoo.com/v8/finance/chart/BTC-USD?interval=1h&range=${rangeParam}`,
+        { headers: { "User-Agent": "Mozilla/5.0 (compatible; btc-backtest/1.0)" } }
+      );
+      if (!res.ok) throw new Error(`Yahoo Finance BTC-USD ${res.status}`);
+      const data = await res.json() as {
+        chart: {
+          result?: Array<{
+            timestamp: number[];
+            indicators: { quote: Array<{ open: (number|null)[]; high: (number|null)[]; low: (number|null)[]; close: (number|null)[]; volume: (number|null)[] }> };
+          }>;
+        };
+      };
+      const chart = data.chart.result?.[0];
+      if (!chart) throw new Error("No chart result from Yahoo Finance");
+      const { timestamp, indicators } = chart;
+      const q = indicators.quote[0];
+      const candles: CandleRow[] = [];
+      for (let i = 0; i < timestamp.length; i++) {
+        const c = q.close[i], o = q.open[i], h = q.high[i], l = q.low[i], v = q.volume[i];
+        if (!c || !o || !h || !l) continue; // skip null/gap bars
+        candles.push({ openTime: timestamp[i] * 1000, open: o, high: h, low: l, close: c, volume: v ?? 0 });
+      }
+      // Trim to requested window
+      const cutoff = Date.now() - days * DAY_MS;
+      const trimmed = candles.filter(c => c.openTime >= cutoff).sort((a, b) => a.openTime - b.openTime);
+      const from = new Date(trimmed[0].openTime).toISOString().slice(0, 10);
+      const to   = new Date(trimmed[trimmed.length - 1].openTime).toISOString().slice(0, 10);
+      console.log(`  Got ${trimmed.length} candles (${from} → ${to})`);
+      return trimmed;
+    } catch (e) {
+      console.warn(`  ⚠ Yahoo Finance failed: ${e}. Falling back to Kraken (30-day cap applies).`);
+    }
   }
 
-  // Deduplicate and sort ascending
-  const seen = new Set<number>();
-  const deduped = all
-    .filter(c => { if (seen.has(c.openTime)) return false; seen.add(c.openTime); return true; })
-    .sort((a, b) => a.openTime - b.openTime);
-
-  const from = new Date(deduped[0].openTime).toISOString().slice(0, 10);
-  const to   = new Date(deduped[deduped.length - 1].openTime).toISOString().slice(0, 10);
-  console.log(`  Total: ${deduped.length} candles (${from} → ${to})`);
-  return deduped;
+  // ── Kraken fallback (≤30 days reliable) ───────────────────────────
+  console.log(`Fetching candles from Kraken (720-candle cap, ~30 days max)...`);
+  const raw = await fetchCandlesFrom("1h", Date.now() - days * DAY_MS, 720);
+  const candles = raw.map(c => ({
+    open: c.open, high: c.high, low: c.low,
+    close: c.close, volume: c.volume, openTime: c.openTime,
+  })).sort((a, b) => a.openTime - b.openTime);
+  const from = new Date(candles[0].openTime).toISOString().slice(0, 10);
+  const to   = new Date(candles[candles.length - 1].openTime).toISOString().slice(0, 10);
+  console.log(`  Got ${candles.length} candles (${from} → ${to})`);
+  return candles;
 }
 
 // ─── Bybit Funding Rate ───────────────────────────────────────────────
@@ -275,12 +307,20 @@ async function fetchEtfNetflow(): Promise<Map<string, number>> {
 }
 
 // ─── External Data Alignment ──────────────────────────────────────────
+/**
+ * @param currentPrice  Close price of the current bar — used for the near-high context filter.
+ * @param rollingHigh14d  Max close over the past 14 days — funding divergence only fires when
+ *                        price is within 5% of this high (i.e. near resistance), suppressing
+ *                        false alarms during mid-rally consolidation.
+ */
 function getExternalAt(
   ts: number,
-  funding:   FundingRecord[],
-  fearGreed: Map<string, number>,
-  yields:    Map<string, YieldRecord>,
-  etf:       Map<string, number>,
+  funding:       FundingRecord[],
+  fearGreed:     Map<string, number>,
+  yields:        Map<string, YieldRecord>,
+  etf:           Map<string, number>,
+  currentPrice:  number,
+  rollingHigh14d: number,
 ): ExternalPoint {
   const date = new Date(ts).toISOString().slice(0, 10);
 
@@ -291,15 +331,21 @@ function getExternalAt(
     else break;
   }
 
-  // Negative divergence: rate is now < -0.02%/8h after being positive in the prior 8h window
+  // Negative divergence: rate flipped to < -0.003%/8h after being positive.
+  // Context filter: only fire when price is within 5% of the 14-day rolling high.
+  // Without this guard the signal fires during normal mid-rally pauses where
+  // negative funding is routine (shorts briefly overcrowded before squeezing up).
   let fundingNegDivergence = false;
-  if (fundingRate !== null && fundingRate < -0.0002) {
-    let prevRate: number | null = null;
-    for (const r of funding) {
-      if (r.ts < ts - 8 * 3600000) prevRate = r.rate;
-      else break;
+  if (fundingRate !== null && fundingRate < -0.00003) {
+    const nearHigh = currentPrice >= rollingHigh14d * 0.95;
+    if (nearHigh) {
+      let prevRate: number | null = null;
+      for (const r of funding) {
+        if (r.ts < ts - 8 * 3600000) prevRate = r.rate;
+        else break;
+      }
+      if (prevRate !== null && prevRate > 0) fundingNegDivergence = true;
     }
-    if (prevRate !== null && prevRate > 0) fundingNegDivergence = true;
   }
 
   // Fear & Greed: look up by date (daily)
@@ -476,7 +522,15 @@ async function main() {
 
     const metrics = computeAllMetrics(window, params.zScoreTrendThreshold, params.zScoreBlipThreshold);
     const base    = generateSignal(metrics, params);
-    const ext     = getExternalAt(cur.openTime, funding, fearGreed, yields, etfFlows);
+
+    // Rolling 14-day high (336 1h bars) for the funding divergence context filter
+    const highLookback = 336;
+    const highStart    = Math.max(0, i - highLookback);
+    const rollingHigh14d = candles
+      .slice(highStart, i + 1)
+      .reduce((mx, c) => Math.max(mx, c.close), 0);
+
+    const ext = getExternalAt(cur.openTime, funding, fearGreed, yields, etfFlows, cur.close, rollingHigh14d);
 
     const { modBuy, modSell, mods } = applyModifiers(base.rawBuyScore, base.rawSellScore, ext);
     const enh = signalFromScores(modBuy, modSell, params.minConfidence);
