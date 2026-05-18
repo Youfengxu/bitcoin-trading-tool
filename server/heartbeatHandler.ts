@@ -41,7 +41,7 @@ let lastWeeklyReportDay = -1;
  * @param currentPrice  Latest BTC price (for funding divergence near-high check)
  * @param candles       Recent 1h candles (used to compute rolling 14d high)
  */
-async function fetchExternalSignals(
+export async function fetchExternalSignals(
   currentPrice: number,
   candles: { close: number }[],
 ): Promise<ExternalSignals> {

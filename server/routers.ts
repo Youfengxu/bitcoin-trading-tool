@@ -30,6 +30,8 @@ import {
   CHALLENGER_PROMOTION_MIN_N,
   CHALLENGER_PROMOTION_PVALUE,
 } from "../shared/tradingTypes";
+import { fetchExternalSignals } from "./heartbeatHandler";
+import { applyExternalModifiers } from "./engine/externalModifiers";
 import * as db from "./db";
 
 export const appRouter = router({
@@ -82,6 +84,20 @@ export const appRouter = router({
     history: publicProcedure
       .input(z.object({ limit: z.number().default(100) }).optional())
       .query(async ({ input }) => db.getRecentMetrics(input?.limit ?? 100)),
+
+    /**
+     * Fetches current external market signal values from live external APIs:
+     * Bybit funding rate, Fear & Greed Index, US 10Y yield velocity, IBIT flow proxy.
+     * Also returns the list of active modifier labels (same strings the engine uses).
+     * Cached by tRPC for 5 minutes to avoid hammering external APIs.
+     */
+    externalSignals: publicProcedure.query(async () => {
+      const candles = await fetchCandles("1h", 336);
+      const currentPrice = candles[candles.length - 1].close;
+      const ext = await fetchExternalSignals(currentPrice, candles);
+      const { mods } = applyExternalModifiers(0.5, 0.5, ext);
+      return { ...ext, activeMods: mods, fetchedAt: Date.now() };
+    }),
   }),
 
   // ─── Signals ────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 import { trpc } from "@/lib/trpc";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Info } from "lucide-react";
+import { Loader2, Info, TrendingUp, TrendingDown, Minus, AlertTriangle } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, ReferenceLine,
@@ -35,6 +35,42 @@ function MetricGauge({ label, value, min, max, unit, color }: {
   );
 }
 
+// ─── External Signal helpers ──────────────────────────────────────────────────
+
+function fearGreedMeta(v: number | null): { label: string; color: string; bg: string } {
+  if (v === null) return { label: "N/A", color: "oklch(0.6 0.02 280)", bg: "oklch(0.6 0.02 280 / 10%)" };
+  if (v >= 80) return { label: "Extreme Greed", color: "oklch(0.65 0.25 25)",  bg: "oklch(0.65 0.25 25 / 10%)" };
+  if (v >= 60) return { label: "Greed",         color: "oklch(0.72 0.20 60)",  bg: "oklch(0.72 0.20 60 / 10%)" };
+  if (v >= 40) return { label: "Neutral",        color: "oklch(0.82 0.18 195)", bg: "oklch(0.82 0.18 195 / 10%)" };
+  if (v >= 21) return { label: "Fear",           color: "oklch(0.82 0.18 195)", bg: "oklch(0.82 0.18 195 / 10%)" };
+  return              { label: "Extreme Fear",   color: "oklch(0.82 0.22 145)", bg: "oklch(0.82 0.22 145 / 10%)" };
+}
+
+function fundingMeta(v: number | null): { label: string; color: string } {
+  if (v === null) return { label: "N/A",            color: "oklch(0.6 0.02 280)" };
+  if (v > 0.001)  return { label: "Extreme Long",   color: "oklch(0.65 0.25 25)"  };
+  if (v > 0.0005) return { label: "Crowded Long",   color: "oklch(0.72 0.20 60)"  };
+  if (v >= 0)     return { label: "Neutral",         color: "oklch(0.82 0.18 195)" };
+  return               { label: "Short Bias",       color: "oklch(0.82 0.22 145)" };
+}
+
+function ibitMeta(v: number | null): { label: string; color: string; icon: "up" | "down" | "flat" } {
+  if (v === null)   return { label: "N/A",           color: "oklch(0.6 0.02 280)",  icon: "flat" };
+  if (v > 4000)     return { label: "Strong Inflow", color: "oklch(0.82 0.22 145)", icon: "up"   };
+  if (v > 1500)     return { label: "Inflow",        color: "oklch(0.82 0.22 145)", icon: "up"   };
+  if (v > -800)     return { label: "Neutral",       color: "oklch(0.82 0.18 195)", icon: "flat" };
+  if (v > -2000)    return { label: "Outflow",       color: "oklch(0.72 0.25 350)", icon: "down" };
+  return                   { label: "Heavy Outflow", color: "oklch(0.65 0.25 25)",  icon: "down" };
+}
+
+function yieldMeta(v: number | null): { label: string; color: string } {
+  if (v === null) return { label: "N/A",       color: "oklch(0.6 0.02 280)"  };
+  if (v > 0.15)   return { label: "Risk-Off ↑", color: "oklch(0.65 0.25 25)"  };
+  if (v > 0.08)   return { label: "Moderate ↑", color: "oklch(0.72 0.20 60)"  };
+  if (v > -0.08)  return { label: "Neutral",    color: "oklch(0.82 0.18 195)" };
+  return               { label: "Risk-On ↓",  color: "oklch(0.82 0.22 145)" };
+}
+
 export default function Metrics() {
   // Read the persisted candle interval from the active strategy so this page
   // stays in sync with the Signal Interval toggle on the Live Price page.
@@ -46,6 +82,10 @@ export default function Metrics() {
     { refetchInterval: 60000 }
   );
   const { data: snapshots } = trpc.metrics.history.useQuery({ limit: 50 }, { refetchInterval: 60000 });
+  const { data: ext } = trpc.metrics.externalSignals.useQuery(undefined, {
+    refetchInterval: 5 * 60 * 1000,  // refresh every 5 min — external APIs don't change faster
+    staleTime: 4 * 60 * 1000,
+  });
 
   const historyData = useMemo(() => {
     if (!snapshots) return [];
@@ -180,6 +220,190 @@ export default function Metrics() {
           </CardContent>
         </Card>
       </div>
+
+      {/* External Market Signals */}
+      <Card className="hud-panel relative hud-corner border-border">
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="font-hud text-sm tracking-wider text-[oklch(0.82_0.18_195)]">
+              EXTERNAL MARKET SIGNALS
+            </CardTitle>
+            {ext && (
+              <span className="text-[10px] font-mono-tech text-muted-foreground">
+                updated {Math.max(0, Math.round((Date.now() - ext.fetchedAt) / 60000))}m ago
+              </span>
+            )}
+          </div>
+          <p className="text-[11px] font-mono-tech text-muted-foreground mt-0.5">
+            Live modifiers applied to signal scores each heartbeat
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {!ext ? (
+            <div className="flex items-center gap-2 text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span className="text-xs font-mono-tech">Fetching external signals…</span>
+            </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* ── Funding Rate ─────────────────────────────────── */}
+                {(() => {
+                  const fm = fundingMeta(ext.fundingRate);
+                  return (
+                    <div className="p-3 rounded-lg border border-border bg-muted/10 space-y-2">
+                      <div className="text-[10px] font-mono-tech text-muted-foreground uppercase tracking-wider">
+                        Bybit Funding Rate (8h)
+                      </div>
+                      <div className="flex items-baseline gap-2">
+                        <span className="font-hud text-xl" style={{ color: fm.color }}>
+                          {ext.fundingRate !== null
+                            ? `${ext.fundingRate >= 0 ? "+" : ""}${(ext.fundingRate * 100).toFixed(4)}%`
+                            : "—"}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Badge
+                          variant="outline"
+                          className="text-[10px] font-mono-tech border-current"
+                          style={{ color: fm.color }}
+                        >
+                          {fm.label}
+                        </Badge>
+                        {ext.fundingNegDivergence && (
+                          <Badge
+                            variant="outline"
+                            className="text-[10px] font-mono-tech text-[oklch(0.65_0.25_25)] border-[oklch(0.65_0.25_25)]"
+                          >
+                            <AlertTriangle className="h-2.5 w-2.5 mr-1" />
+                            FLIP NEAR HIGH
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* ── Fear & Greed ──────────────────────────────────── */}
+                {(() => {
+                  const fgm = fearGreedMeta(ext.fearGreed);
+                  const pct = ext.fearGreed !== null ? Math.max(0, Math.min(100, ext.fearGreed)) : 0;
+                  return (
+                    <div className="p-3 rounded-lg border border-border bg-muted/10 space-y-2">
+                      <div className="text-[10px] font-mono-tech text-muted-foreground uppercase tracking-wider">
+                        Fear &amp; Greed Index
+                      </div>
+                      <div className="flex items-baseline gap-2">
+                        <span className="font-hud text-xl" style={{ color: fgm.color }}>
+                          {ext.fearGreed !== null ? ext.fearGreed : "—"}
+                        </span>
+                        <span className="text-xs font-mono-tech text-muted-foreground">/ 100</span>
+                      </div>
+                      {ext.fearGreed !== null && (
+                        <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "oklch(0.25 0.02 280)" }}>
+                          <div
+                            className="h-full rounded-full transition-all duration-500"
+                            style={{ width: `${pct}%`, backgroundColor: fgm.color }}
+                          />
+                        </div>
+                      )}
+                      <Badge
+                        variant="outline"
+                        className="text-[10px] font-mono-tech border-current"
+                        style={{ color: fgm.color }}
+                      >
+                        {fgm.label}
+                      </Badge>
+                    </div>
+                  );
+                })()}
+
+                {/* ── US 10Y Yield Velocity ─────────────────────────── */}
+                {(() => {
+                  const ym = yieldMeta(ext.yieldVelocity);
+                  return (
+                    <div className="p-3 rounded-lg border border-border bg-muted/10 space-y-2">
+                      <div className="text-[10px] font-mono-tech text-muted-foreground uppercase tracking-wider">
+                        US 10Y Yield Velocity
+                      </div>
+                      <div className="flex items-baseline gap-2">
+                        <span className="font-hud text-xl" style={{ color: ym.color }}>
+                          {ext.yieldVelocity !== null
+                            ? `${ext.yieldVelocity >= 0 ? "+" : ""}${ext.yieldVelocity.toFixed(3)}`
+                            : "—"}
+                        </span>
+                        {ext.yieldVelocity !== null && (
+                          <span className="text-xs font-mono-tech text-muted-foreground">ppt / day</span>
+                        )}
+                      </div>
+                      <Badge
+                        variant="outline"
+                        className="text-[10px] font-mono-tech border-current"
+                        style={{ color: ym.color }}
+                      >
+                        {ym.label}
+                      </Badge>
+                    </div>
+                  );
+                })()}
+
+                {/* ── IBIT 7-Day Flow Proxy ─────────────────────────── */}
+                {(() => {
+                  const im = ibitMeta(ext.ibitFlow7d);
+                  const Icon = im.icon === "up" ? TrendingUp : im.icon === "down" ? TrendingDown : Minus;
+                  return (
+                    <div className="p-3 rounded-lg border border-border bg-muted/10 space-y-2">
+                      <div className="text-[10px] font-mono-tech text-muted-foreground uppercase tracking-wider">
+                        IBIT 7-Day Flow Proxy
+                      </div>
+                      <div className="flex items-baseline gap-2">
+                        <Icon className="h-4 w-4 mt-0.5 self-center" style={{ color: im.color }} />
+                        <span className="font-hud text-xl" style={{ color: im.color }}>
+                          {ext.ibitFlow7d !== null
+                            ? `${ext.ibitFlow7d >= 0 ? "+" : ""}$${Math.round(Math.abs(ext.ibitFlow7d)).toLocaleString()}M`
+                            : "—"}
+                        </span>
+                      </div>
+                      <Badge
+                        variant="outline"
+                        className="text-[10px] font-mono-tech border-current"
+                        style={{ color: im.color }}
+                      >
+                        {im.label}
+                      </Badge>
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Active modifier pills — mirrors what the signal engine emits */}
+              {ext.activeMods.length > 0 ? (
+                <div className="mt-1 p-3 rounded-lg border border-[oklch(0.72_0.25_350)]/30 bg-[oklch(0.72_0.25_350)]/5">
+                  <div className="text-[10px] font-mono-tech text-muted-foreground uppercase tracking-wider mb-2">
+                    Active Signal Modifiers
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {ext.activeMods.map((mod, i) => (
+                      <code
+                        key={i}
+                        className="text-[10px] font-mono-tech text-[oklch(0.72_0.25_350)] bg-[oklch(0.72_0.25_350)]/10 px-2 py-0.5 rounded"
+                      >
+                        {mod}
+                      </code>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-1 p-2 rounded-lg border border-border bg-muted/5">
+                  <span className="text-[10px] font-mono-tech text-muted-foreground">
+                    No active modifiers — all signals within neutral thresholds
+                  </span>
+                </div>
+              )}
+            </>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Moving Averages */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
