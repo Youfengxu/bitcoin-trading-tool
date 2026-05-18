@@ -151,7 +151,7 @@ export const DEFAULT_STRATEGY_PARAMS: StrategyParameters = {
   volumeRatioThreshold: 1.5,
   emaCrossoverWeight: 0.2,
   maxPositionPct: 0.25,
-  minConfidence: 0.55,
+  minConfidence: 0.45,
 };
 
 export interface MetricsData {

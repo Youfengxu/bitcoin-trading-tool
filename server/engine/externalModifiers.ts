@@ -138,24 +138,20 @@ export function applyExternalModifiers(
     }
   }
 
-  // 6. IBIT signed-flow proxy — institutional ETF demand direction
-  //    Only fires when actual SosoValue data is absent (prevents double-counting).
-  if (ext.ibitFlow7d !== null && ext.etfNetflow7dSma === null) {
-    if (ext.ibitFlow7d > 4000) {        // Strong inflow streak → amplify buy
-      mBuy  *= 1.20;
-      mSell *= 0.88;
-      mods.push(`IBIT-7d=+${ext.ibitFlow7d.toFixed(0)}M[strong-inflow buy×1.20]`);
-    } else if (ext.ibitFlow7d > 1500) { // Moderate inflows → mild buy boost
-      mBuy  *= 1.12;
-      mods.push(`IBIT-7d=+${ext.ibitFlow7d.toFixed(0)}M[inflow buy×1.12]`);
-    } else if (ext.ibitFlow7d < -2000) { // Heavy outflows (like $635M single-day) → amplify sell
-      mSell *= 1.20;
-      mBuy  *= 0.90;
-      mods.push(`IBIT-7d=${ext.ibitFlow7d.toFixed(0)}M[heavy-outflow sell×1.20]`);
-    } else if (ext.ibitFlow7d < -800) {  // Moderate outflows
-      mSell *= 1.10;
-      mods.push(`IBIT-7d=${ext.ibitFlow7d.toFixed(0)}M[outflow sell×1.10]`);
-    }
+  // 6. IBIT signed-flow proxy — DISABLED 2026-05-18 after 180-day backtest evidence.
+  //    The previous thresholds (±$800M / ±$2,000M / ±$4,000M) fired on ~40% of bars
+  //    and produced only 21.95% precision on hold→sell flips (worse than random).
+  //    Disabling the modifier improved total return from -11.1% → -7.2% and flipped
+  //    downtrend annualized return from -54% → +15% on the Nov 2025 – May 2026 window.
+  //
+  //    The flow direction IS real (the proxy tracks Farside-reported actual flows),
+  //    but magnitude calibration is too loose at current thresholds. Stricter
+  //    thresholds may be re-introduced after the threshold-sweep experiment.
+  //
+  //    The ext.ibitFlow7d field is still populated by fetchExternalSignals() and
+  //    surfaced to the Metrics page UI — it is just not applied as a score modifier.
+  if (false && ext.ibitFlow7d !== null && ext.etfNetflow7dSma === null) {
+    // intentionally unreachable — preserved for git blame context
   }
 
   return { modBuy: mBuy, modSell: mSell, mods };

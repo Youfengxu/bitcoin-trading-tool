@@ -44,10 +44,13 @@ import type { StrategyParameters } from "../../shared/tradingTypes";
 import * as fs from "fs";
 
 // ─── CLI Config ───────────────────────────────────────────────────────
-const argDays  = process.argv.find(a => a.startsWith("--days="));
-const argPrice = process.argv.find(a => a.startsWith("--price="));
-const WINDOW_DAYS     = argDays  ? parseInt(argDays.slice(7))   : 90;
-const HIGHLIGHT_PRICE = argPrice ? parseFloat(argPrice.slice(8)) : 82000;
+const argDays    = process.argv.find(a => a.startsWith("--days="));
+const argPrice   = process.argv.find(a => a.startsWith("--price="));
+const argMinConf = process.argv.find(a => a.startsWith("--min-confidence="));
+const DISABLE_IBIT = process.argv.includes("--no-ibit");
+const WINDOW_DAYS      = argDays    ? parseInt(argDays.slice(7))   : 90;
+const HIGHLIGHT_PRICE  = argPrice   ? parseFloat(argPrice.slice(8)) : 82000;
+const MIN_CONF_OVERRIDE = argMinConf ? parseFloat(argMinConf.slice("--min-confidence=".length)) : null;
 
 const HIGHLIGHT_RANGE = 0.05;   // ±5% around highlight price for detail table
 const DROP_THRESHOLD  = -0.02;  // -2% in 24h = a "drop" for precision/recall
@@ -494,7 +497,11 @@ async function main() {
   console.log(`  ETF netflow (SosoVal): ${avail.etf}`);
   console.log(`  IBIT signed-flow:      ${avail.ibit}`);
 
-  const params: StrategyParameters = DEFAULT_STRATEGY_PARAMS;
+  const params: StrategyParameters = MIN_CONF_OVERRIDE !== null
+    ? { ...DEFAULT_STRATEGY_PARAMS, minConfidence: MIN_CONF_OVERRIDE }
+    : DEFAULT_STRATEGY_PARAMS;
+  if (MIN_CONF_OVERRIDE !== null) console.log(`⚙ minConfidence override → ${MIN_CONF_OVERRIDE}`);
+  if (DISABLE_IBIT) console.log(`⚙ IBIT modifier DISABLED (ibitFlow7d → null)`);
   const rows: ReplayRow[] = [];
 
   // ── 2. Replay bar by bar ────────────────────────────────────────────
@@ -515,7 +522,8 @@ async function main() {
       .slice(highStart, i + 1)
       .reduce((mx, c) => Math.max(mx, c.close), 0);
 
-    const ext = getExternalAt(cur.openTime, funding, fearGreed, yields, etfFlows, ibitFlows, cur.close, rollingHigh14d);
+    const extRaw = getExternalAt(cur.openTime, funding, fearGreed, yields, etfFlows, ibitFlows, cur.close, rollingHigh14d);
+    const ext = DISABLE_IBIT ? { ...extRaw, ibitFlow7d: null } : extRaw;
 
     const { modBuy, modSell, mods } = applyExternalModifiers(base.rawBuyScore, base.rawSellScore, ext);
     const enh = signalFromScores(modBuy, modSell, params.minConfidence);
