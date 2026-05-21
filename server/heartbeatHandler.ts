@@ -168,8 +168,6 @@ export async function fetchExternalSignals(
 }
 /** Timestamp (ms) of the last successful signal generation run. Used for schedule throttle. */
 let lastSignalRunTs = 0;
-/** Rolling buffer of the last 2 non-hold signal directions for confirmation. */
-let signalConfirmationBuffer: Array<"buy" | "sell"> = [];
 
 export async function handleHeartbeat() {
   const now = new Date();
@@ -347,15 +345,19 @@ async function runSignalGeneration(candleInterval = "1h") {
     const params = championAppliedParams;
 
     // Signal confirmation: only act when the same direction appears twice in a row.
-    // Resets on direction change; holds don't affect the buffer.
+    // Reads the last 2 champion non-hold signals from the DB so confirmation survives
+    // server restarts and serverless cold starts (no in-memory state required).
+    let confirmed = false;
     if (signal.signal !== "hold") {
-      signalConfirmationBuffer.push(signal.signal);
-      if (signalConfirmationBuffer.length > 2) signalConfirmationBuffer.shift();
+      const recent = await db.getRecentSignals(20);
+      const champNonHold = recent
+        .filter((s) => s.strategyVariant === "champion" && s.signal !== "hold")
+        .slice(0, 2);
+      confirmed =
+        champNonHold.length >= 2 &&
+        champNonHold[0].signal === signal.signal &&
+        champNonHold[1].signal === signal.signal;
     }
-    const confirmed =
-      signal.signal !== "hold" &&
-      signalConfirmationBuffer.length === 2 &&
-      signalConfirmationBuffer[0] === signalConfirmationBuffer[1];
 
     if (!confirmed && signal.signal !== "hold") {
       console.log(`[Heartbeat] Signal ${signal.signal.toUpperCase()} awaiting confirmation (1/2)`);

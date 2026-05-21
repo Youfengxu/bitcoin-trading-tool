@@ -685,13 +685,25 @@ async function sendTelegramNotification(
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
   if (!token || !chatId) return;
-  const message = `\ud83d\udd14 *BTC ${signal.toUpperCase()} Signal*\n\n\ud83d\udcb0 Price: $${price.toFixed(2)}\n\ud83d\udcca Portfolio: $${portfolioValue.toFixed(2)}\n\n\ud83d\udcdd Reasoning:\n${reasoning.substring(0, 500)}`;
+  // Use HTML parse mode \u2014 reasoning contains [RSI], [MACD] etc. which break Telegram Markdown.
+  const escapeHtml = (s: string) =>
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const emoji = signal === "buy" ? "\ud83d\udfe2" : "\ud83d\udd34";
+  const message =
+    `${emoji} <b>BTC ${signal.toUpperCase()} Signal</b>\n\n` +
+    `\ud83d\udcb0 Price: $${price.toFixed(2)}\n` +
+    `\ud83d\udcca Portfolio: $${portfolioValue.toFixed(2)}\n\n` +
+    `\ud83d\udcdd <b>Reasoning:</b>\n<code>${escapeHtml(reasoning.substring(0, 500))}</code>`;
   try {
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    const tgRes = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text: message, parse_mode: "Markdown" }),
+      body: JSON.stringify({ chat_id: chatId, text: message, parse_mode: "HTML" }),
     });
+    if (!tgRes.ok) {
+      const detail = await tgRes.text().catch(() => "");
+      console.warn(`[Telegram] Rejected (${tgRes.status}): ${detail}`);
+    }
   } catch (e) { console.warn("[Telegram] Send failed:", e); }
 }
 
