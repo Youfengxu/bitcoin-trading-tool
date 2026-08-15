@@ -1,0 +1,388 @@
+<title>Signal Engine Post-Mortem</title>
+<style>
+  /* ── Tokens: complete light palette ───────────────────────────── */
+  :root {
+    --ground:      #EFF2F5;
+    --surface:     #FFFFFF;
+    --surface-alt: #F6F8FA;
+    --ink:         #16202B;
+    --ink-soft:    #55636F;
+    --ink-faint:   #8595A2;
+    --rule:        #DCE3E9;
+    --rule-strong: #C3CDD6;
+    --accent:      #A9522A;
+    --accent-soft: #F0E2DA;
+    --crit:        #A32B2B;
+    --crit-soft:   #F5E2E1;
+    --warn:        #9C6A12;
+    --warn-soft:   #F5EBD8;
+    --ok:          #2C6A58;
+    --ok-soft:     #DFEDE8;
+    --shadow:      0 1px 2px rgba(22,32,43,.06), 0 6px 18px rgba(22,32,43,.05);
+
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:      #0F151B;
+      --surface:     #161E26;
+      --surface-alt: #1B242D;
+      --ink:         #E2E8ED;
+      --ink-soft:    #98A6B2;
+      --ink-faint:   #6C7C89;
+      --rule:        #27323C;
+      --rule-strong: #38454F;
+      --accent:      #D5804F;
+      --accent-soft: #33231A;
+      --crit:        #E0736C;
+      --crit-soft:   #351E1D;
+      --warn:        #D6A343;
+      --warn-soft:   #332818;
+      --ok:          #57A78C;
+      --ok-soft:     #162A24;
+      --shadow:      0 1px 2px rgba(0,0,0,.4), 0 6px 18px rgba(0,0,0,.28);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:      #0F151B;
+    --surface:     #161E26;
+    --surface-alt: #1B242D;
+    --ink:         #E2E8ED;
+    --ink-soft:    #98A6B2;
+    --ink-faint:   #6C7C89;
+    --rule:        #27323C;
+    --rule-strong: #38454F;
+    --accent:      #D5804F;
+    --accent-soft: #33231A;
+    --crit:        #E0736C;
+    --crit-soft:   #351E1D;
+    --warn:        #D6A343;
+    --warn-soft:   #332818;
+    --ok:          #57A78C;
+    --ok-soft:     #162A24;
+    --shadow:      0 1px 2px rgba(0,0,0,.4), 0 6px 18px rgba(0,0,0,.28);
+  }
+
+  /* ── Base ─────────────────────────────────────────────────────── */
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 940px; margin: 0 auto; padding: 56px 24px 96px; }
+
+  h1, h2, h3 { font-family: var(--mono); font-weight: 600; text-wrap: balance; margin: 0; }
+  h1 { font-size: 30px; letter-spacing: -.02em; line-height: 1.22; }
+  h2 { font-size: 15px; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-soft); }
+  h3 { font-size: 17px; letter-spacing: -.01em; line-height: 1.35; }
+  p  { margin: 0; max-width: 68ch; }
+  a  { color: var(--accent); }
+  code {
+    font-family: var(--mono); font-size: .875em;
+    background: var(--surface-alt); border: 1px solid var(--rule);
+    border-radius: 3px; padding: .1em .34em; white-space: nowrap;
+  }
+  strong { font-weight: 650; }
+
+  .stack   { display: flex; flex-direction: column; gap: 18px; }
+  .stack-l { display: flex; flex-direction: column; gap: 40px; }
+  .stack-s { display: flex; flex-direction: column; gap: 10px; }
+
+  /* ── Masthead ─────────────────────────────────────────────────── */
+  .masthead { display: flex; flex-direction: column; gap: 14px; padding-bottom: 30px; border-bottom: 2px solid var(--rule-strong); }
+  .eyebrow {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .13em;
+    text-transform: uppercase; color: var(--accent);
+  }
+  .dek { font-size: 18px; color: var(--ink-soft); max-width: 66ch; }
+
+  /* ── Verdict ──────────────────────────────────────────────────── */
+  .verdict {
+    background: var(--surface); border: 1px solid var(--rule);
+    border-left: 4px solid var(--accent); border-radius: 4px;
+    padding: 26px 28px; box-shadow: var(--shadow);
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  .verdict p { max-width: 70ch; }
+
+  /* ── Scoreboard ───────────────────────────────────────────────── */
+  .scores { display: grid; grid-template-columns: repeat(auto-fit, minmax(178px, 1fr)); gap: 12px; }
+  .score {
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 4px;
+    padding: 16px 18px; display: flex; flex-direction: column; gap: 5px;
+  }
+  .score .n {
+    font-family: var(--mono); font-size: 25px; font-weight: 600;
+    font-variant-numeric: tabular-nums; letter-spacing: -.02em; line-height: 1.1;
+  }
+  .score .k { font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-faint); }
+  .score .sub { font-size: 13px; color: var(--ink-soft); line-height: 1.45; }
+  .n.bad { color: var(--crit); } .n.warn { color: var(--warn); } .n.good { color: var(--ok); }
+
+  /* ── Method note ──────────────────────────────────────────────── */
+  .note {
+    background: var(--surface-alt); border: 1px dashed var(--rule-strong);
+    border-radius: 4px; padding: 18px 20px; display: flex; flex-direction: column; gap: 9px;
+  }
+  .note .lbl { font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint); }
+  .note p { font-size: 14.5px; color: var(--ink-soft); max-width: 72ch; }
+
+  /* ── Findings ─────────────────────────────────────────────────── */
+  .finding {
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 4px;
+    padding: 20px 22px 22px; display: flex; flex-direction: column; gap: 13px;
+    border-left: 3px solid var(--rule-strong); box-shadow: var(--shadow);
+  }
+  .finding.p0 { border-left-color: var(--crit); }
+  .finding.p1 { border-left-color: var(--warn); }
+  .finding.p2 { border-left-color: var(--ink-faint); }
+  .fhead { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .fid {
+    font-family: var(--mono); font-size: 12px; font-weight: 600; letter-spacing: .05em;
+    padding: 3px 7px; border-radius: 3px; white-space: nowrap;
+  }
+  .p0 .fid { background: var(--crit-soft); color: var(--crit); }
+  .p1 .fid { background: var(--warn-soft); color: var(--warn); }
+  .p2 .fid { background: var(--surface-alt); color: var(--ink-soft); border: 1px solid var(--rule); }
+  .finding p { font-size: 15px; }
+  .loc { font-family: var(--mono); font-size: 12.5px; color: var(--ink-faint); }
+  .fix {
+    border-top: 1px solid var(--rule); padding-top: 12px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .fix .lbl { font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--ok); }
+  .fix p { font-size: 14.5px; color: var(--ink-soft); }
+
+  /* ── Tables ───────────────────────────────────────────────────── */
+  .tscroll { overflow-x: auto; border: 1px solid var(--rule); border-radius: 4px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 9px 14px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  thead th {
+    font-size: 11px; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--ink-faint); font-weight: 600; background: var(--surface-alt);
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.bad { color: var(--crit); font-weight: 600; }
+  td.good { color: var(--ok); font-weight: 600; }
+  caption { caption-side: bottom; text-align: left; padding: 10px 14px; font-family: var(--sans); font-size: 13px; color: var(--ink-faint); }
+
+  /* ── Plan ─────────────────────────────────────────────────────── */
+  .tranche {
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 4px;
+    padding: 20px 22px; display: flex; flex-direction: column; gap: 12px;
+  }
+  .tranche h3 { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .badge {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+    padding: 3px 8px; border-radius: 3px; background: var(--accent-soft); color: var(--accent);
+  }
+  ol.plan, ul.plain { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 8px; }
+  ol.plan li, ul.plain li { font-size: 14.5px; color: var(--ink-soft); max-width: 68ch; }
+  ol.plan li::marker { font-family: var(--mono); color: var(--ink-faint); font-size: 13px; }
+
+  footer { margin-top: 20px; padding-top: 22px; border-top: 1px solid var(--rule); font-size: 13.5px; color: var(--ink-faint); }
+
+  @media (max-width: 620px) {
+    .wrap { padding: 36px 16px 64px; }
+    h1 { font-size: 25px; }
+  }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <div class="stack-l">
+
+    <header class="masthead">
+      <div class="eyebrow">Diagnostic Review · BTC Signal Engine</div>
+      <h1>Signal Engine Post-Mortem</h1>
+      <p class="dek">Why the calls feel late, why the performance numbers can't be trusted, and the twelve defects behind both — ordered by what to fix first.</p>
+    </header>
+
+    <section class="verdict">
+      <h2 style="color:var(--accent)">Verdict</h2>
+      <p><strong>The signals aren't late. The position construction is.</strong> The engine emits a directional call on 18–65% of all bars depending on regime — it is hyperactive, not hesitant. What arrives late is the <em>fill</em>: <code>maxPositionPct</code> is applied as a fraction of <em>remaining</em> cash, so each buy deploys 25% of what's left, then 25% of the rest, and so on. You approach full exposure asymptotically and never reach it, and you never fully exit. Your average fill lands <strong>0.78% above</strong> the price of the signal that triggered you on entries, and <strong>0.48% below</strong> it on exits.</p>
+      <p>Underneath that sits a second, larger problem: <strong>the instrumentation that would have told you this is dead.</strong> Hold signals are never resolved, so opportunity-cost accounting, the λ penalty, and a third of the champion–challenger sample have been silently inert this whole time. Combined with zero fee modelling and a leaking optimizer split, the reported performance figures do not measure what they claim to.</p>
+    </section>
+
+    <section class="stack">
+      <h2>Headline measurements</h2>
+      <div class="scores">
+        <div class="score"><span class="k">Fill vs signal</span><span class="n bad">+0.78%</span><span class="sub">Average buy fills above the triggering signal price</span></div>
+        <div class="score"><span class="k">Trades for same return</span><span class="n bad">398 → 6</span><span class="sub">Fractional sizing vs target allocation, near-identical P&amp;L</span></div>
+        <div class="score"><span class="k">RSI directional accuracy</span><span class="n bad">10.4%</span><span class="sub">Anti-predictive on trending data (coin flip = 50%)</span></div>
+        <div class="score"><span class="k">EMA vote staleness</span><span class="n warn">58 bars</span><span class="sub">Mean age of the "crossover" when it votes</span></div>
+        <div class="score"><span class="k">Hold signals resolved</span><span class="n bad">0</span><span class="sub">Every hold sits at <code>pending</code> forever</span></div>
+        <div class="score"><span class="k">Trading costs modelled</span><span class="n bad">None</span><span class="sub">Backtest, simulator and replay all fill free</span></div>
+      </div>
+    </section>
+
+    <section class="note">
+      <span class="lbl">Method &amp; what this rests on</span>
+      <p>This environment has no <code>DATABASE_URL</code> and no network egress to the exchanges, so I could not read your actual signal history or replay real candles. Every <strong>defect</strong> below is a fact about the code and holds regardless. Every <strong>number</strong> comes from running your real <code>computeAllMetrics</code> and <code>generateSignal</code> over synthetic series with mathematically known turning points, at the same fixed 336-bar window production uses — they are directionally reliable and reproduce the mechanism, but they are illustrations, not measurements of your live P&amp;L. Re-run the harness against real history before trusting any specific figure.</p>
+      <p>Two hypotheses I started with turned out to be <em>wrong</em>, and I've dropped them: the 2-of-2 confirmation buffer adds only 0–1 bars of delay, and the <code>minConfidence</code> gate is loose rather than restrictive (65.8% of bars clear it; raw scores reach 1.38).</p>
+    </section>
+
+    <section class="stack">
+      <h2>P0 · Correctness bugs that void your metrics</h2>
+
+      <div class="finding p0">
+        <div class="fhead"><span class="fid">P0-1</span><h3>Hold signals are never resolved, so the entire opportunity-cost system is inert</h3></div>
+        <p class="loc">server/db.ts:185–191 · server/heartbeatHandler.ts:475–487</p>
+        <p><code>getPendingSignals()</code> filters <code>signal != 'hold'</code>. Holds therefore keep <code>outcome = 'pending'</code> permanently and <code>updateSignalOutcome</code> is never called on them. This makes the <code>hold_correct</code> / <code>hold_missed</code> branch in <code>runSignalValidation</code> unreachable dead code, pins <code>holdRegret</code>, <code>holdMissed</code> and <code>holdCorrect</code> in the validation log at zero forever, and means <code>OPPORTUNITY_COST_LAMBDA</code> has <strong>no effect in production at all</strong> — it exists only inside the backtest. It also starves champion–challenger: <code>getResolvedSignalsSince</code> selects <code>outcome != 'pending'</code>, so the paired t-test has never seen a single hold from any variant.</p>
+        <div class="fix"><span class="lbl">Fix</span><p>Drop the <code>!= 'hold'</code> predicate. The heartbeat's validator already classifies holds correctly; the manual path in <code>routers.ts:155–200</code> does not, so give it the same hold branch or have both call one shared resolver. Expect win-rate and reward figures to move materially once holds start counting.</p></div>
+      </div>
+
+      <div class="finding p0">
+        <div class="fhead"><span class="fid">P0-2</span><h3>Scheduler state lives in module memory and resets on every cold start</h3></div>
+        <p class="loc">server/heartbeatHandler.ts:32–33, 170</p>
+        <p>Same class of bug as the confirmation buffer we just fixed, and three more instances survive. <code>lastSignalRunTs</code> resets to <code>0</code>, which makes <code>signalThrottled</code> evaluate false on every cold invocation — so <strong>signal generation runs on every single heartbeat regardless of the <code>heartbeatScheduleMinutes</code> you configured.</strong> That is the direct explanation for the signal volume you saw over 12 hours. <code>lastOptimizeHour</code> and <code>lastWeeklyReportDay</code> reset the same way, so walk-forward optimization can re-run on every heartbeat during hour 0 and the weekly report can be written repeatedly all Sunday — churning strategy versions and duplicating <code>weekly_performance</code> rows.</p>
+        <div class="fix"><span class="lbl">Fix</span><p>Derive all three from the database; no schema change needed. <code>lastSignalRunTs</code> → <code>MAX(ts)</code> over champion signals. <code>lastOptimizeHour</code> → <code>createdAt</code> of the newest <code>[Auto]</code> strategy version. <code>lastWeeklyReportDay</code> → <code>MAX(weekEnd)</code> in <code>weekly_performance</code>.</p></div>
+      </div>
+
+      <div class="finding p0">
+        <div class="fhead"><span class="fid">P0-3</span><h3>No fee, spread or slippage anywhere — and the objective function rewards overtrading</h3></div>
+        <p class="loc">walkForwardOptimizer.ts:102–113 · heartbeatHandler.ts:369–401 · routers.ts:656–678</p>
+        <p>All three execution paths fill instantly at <code>candle.close</code> at zero cost. On its own that just inflates returns. The real damage is the interaction: the optimizer maximises <code>totalReturn − λ × holdRegret</code>, so <em>holding is penalised while trading is free</em>. The search is structurally biased toward the most hyperactive parameter sets, and the "aggressive" challenger — which trades more by construction — carries a systematically overstated edge into the promotion t-test.</p>
+        <div class="fix"><span class="lbl">Fix</span><p>Add a single <code>FEE_BPS</code> constant (≈13 bps/side ≈ Kraken taker 0.26% round trip) and apply it in all three paths plus <code>historicalSignalReplay</code>. This is the highest-leverage single line in the codebase: it re-scores every parameter set the optimizer has ever chosen.</p></div>
+      </div>
+
+      <div class="finding p0">
+        <div class="fhead"><span class="fid">P0-4</span><h3>Confirmation can be satisfied by two signals hours apart</h3></div>
+        <p class="loc">server/heartbeatHandler.ts:347–360</p>
+        <p>My DB-backed rewrite filters holds out before taking the last two champion signals, which preserves the original in-memory semantics — but with no time bound. A BUY, twenty hours of HOLD, then another BUY now counts as confirmation. That is a stale confirmation acting on a market state that no longer exists.</p>
+        <div class="fix"><span class="lbl">Fix</span><p>Require both confirming signals to fall within a bounded window — roughly <code>2.5 × heartbeatScheduleMinutes</code> — and otherwise treat the run as broken and restart it.</p></div>
+      </div>
+    </section>
+
+    <section class="stack">
+      <h2>P1 · Strategy logic defects</h2>
+
+      <div class="finding p1">
+        <div class="fhead"><span class="fid">P1-1</span><h3>Position sizing is a fraction of what's left, not a target allocation</h3></div>
+        <p class="loc">heartbeatHandler.ts:370–397 · routers.ts:656–678 · walkForwardOptimizer.ts:104–112</p>
+        <p>This is the mechanism behind your "too late" instinct. <code>tradeUsd = cash × maxPositionPct</code> spends 25% of <em>remaining</em> cash, so consecutive buys deploy 25%, 18.75%, 14.1%… — 57.8% invested after three signals, 76.3% after five, never 100%. Exits decay identically, so you hold through most of a decline. Because directional episodes average ~7.7 consecutive signals, you spend the whole move averaging in at progressively worse prices. Measured against the price at the first signal of each episode: entries fill <strong>0.78% higher</strong>, exits <strong>0.48% lower</strong>. Under full target sizing the same signal stream produced the same return in <strong>6 trades instead of 398</strong>.</p>
+        <div class="fix"><span class="lbl">Fix</span><p>Switch to target exposure: compute a desired allocation (scaled by confidence if you want conviction sizing), then trade only the <em>difference</em> between current and target. A buy moves you toward the target in one decisive fill; a sell moves you toward zero and actually gets you out. This alone should change the felt behaviour more than any indicator change.</p></div>
+      </div>
+
+      <div class="finding p1">
+        <div class="fhead"><span class="fid">P1-2</span><h3>The EMA component votes on state, not on the crossover event</h3></div>
+        <p class="loc">server/engine/signalGenerator.ts:120–139</p>
+        <p>The branch is <code>if (diff &gt; 0) → buy</code>, which is true for the entire duration of an uptrend rather than at the moment of the cross. Over the test window there were <strong>6 actual EMA12/26 crossings but 720 directional votes</strong>, at a mean age of <strong>58 bars after the cross</strong>. The component is a persistent directional bias wearing the name "crossover". It contributes regime information and zero timing information — yet it is weighted as if it were an entry trigger.</p>
+        <div class="fix"><span class="lbl">Fix</span><p>Split the two jobs. Keep EMA state as a <em>regime filter</em> that gates which direction is permitted, and add a genuine <em>trigger</em> — the crossing event itself, or a MACD-histogram zero-cross — as the thing that actually times entry. Only the trigger should carry entry weight.</p></div>
+      </div>
+
+      <div class="finding p1">
+        <div class="fhead"><span class="fid">P1-3</span><h3>"Z-Score Trend" is mean-reversion logic filed under trend-following, so Hurst amplifies it when it's most wrong</h3></div>
+        <p class="loc">signalGenerator.ts:141–159 and :199</p>
+        <p>The direction is <code>z &gt; 0 ? "sell" : "buy"</code> — it fades the move, which is mean-reverting behaviour. But the name sits in the <code>trendFollowing</code> set, so it receives <code>trendMult</code> and gets <strong>amplified exactly when Hurst says price is trending</strong>. In the run, 100% of its directional votes were cast under amplification, and 77% of them were wrong on the next 24 hours. The regime-weighting machinery is working correctly; it is being handed a mislabelled input.</p>
+        <div class="fix"><span class="lbl">Fix</span><p>Move <code>"Z-Score Trend"</code> into the <code>meanReverting</code> set so Hurst damps it in trends — a one-line change. If you intended it as genuinely trend-following, invert its direction instead. Do one or the other; today it is the worst of both.</p></div>
+      </div>
+
+      <div class="finding p1">
+        <div class="fhead"><span class="fid">P1-4</span><h3>Mean-reversion components are anti-predictive in trend and are damped but never silenced</h3></div>
+        <p class="loc">signalGenerator.ts:196–223</p>
+        <p>Directional accuracy against the next 24 hours, on trending data:</p>
+        <div class="tscroll">
+          <table>
+            <thead><tr><th>Component</th><th>Buy votes</th><th>Sell votes</th><th>Avg strength</th><th>Accuracy</th></tr></thead>
+            <tbody>
+              <tr><td>ADX</td><td>355</td><td>347</td><td>0.664</td><td class="good">81.1%</td></tr>
+              <tr><td>EMA Crossover</td><td>364</td><td>356</td><td>0.270</td><td class="good">77.7%</td></tr>
+              <tr><td>MACD</td><td>358</td><td>362</td><td>0.745</td><td class="good">73.0%</td></tr>
+              <tr><td>Bollinger Bands</td><td>50</td><td>50</td><td>0.042</td><td class="bad">16.3%</td></tr>
+              <tr><td>Z-Score Trend</td><td>50</td><td>50</td><td>0.106</td><td class="bad">16.3%</td></tr>
+              <tr><td>RSI</td><td>230</td><td>280</td><td>0.332</td><td class="bad">10.4%</td></tr>
+            </tbody>
+            <caption>Accuracy far below 50% means the component is systematically inverted, not merely noisy. RSI carries the third-largest average strength while being the least accurate.</caption>
+          </table>
+        </div>
+        <p>The Hurst multiplier floors at <code>0.1</code>, so these never stop contributing — they drag the composite toward fading exactly the moves the good components identified.</p>
+        <div class="fix"><span class="lbl">Fix</span><p>Gate them on regime rather than merely scaling them: let RSI and Bollinger Bands vote only when <code>ADX &lt; 25</code> or <code>Hurst &lt; 0.45</code>. In a confirmed trend they should be silent, not quiet.</p></div>
+      </div>
+    </section>
+
+    <section class="stack">
+      <h2>P2 · Evaluation and testing defects</h2>
+
+      <div class="finding p2">
+        <div class="fhead"><span class="fid">P2-1</span><h3>The walk-forward split leaks — the test set contains the training set</h3></div>
+        <p class="loc">walkForwardOptimizer.ts:230–243</p>
+        <p><code>trainData = candles.slice(0, splitIdx)</code> but <code>testData = candles</code> — the full array, training window included. The "validation" pass re-scores candidates on data they were selected on, so <code>backtestReturnPct</code> and friends are in-sample figures presented as out-of-sample. With only 16 random ±20% jitter variations this is also a thin search, as the README already concedes.</p>
+        <div class="fix"><span class="lbl">Fix</span><p><code>testData = candles.slice(splitIdx)</code>. Expect the reported backtest numbers to drop — that drop is the overfit you have been carrying.</p></div>
+      </div>
+
+      <div class="finding p2">
+        <div class="fhead"><span class="fid">P2-2</span><h3>The optimizer backtests on a growing window; production runs on a fixed one</h3></div>
+        <p class="loc">walkForwardOptimizer.ts:86 vs shared/tradingTypes.ts:20–24</p>
+        <p>The backtest feeds <code>candles.slice(0, i + 1)</code> — an ever-growing history — while production always passes exactly <code>getCandleLimit(interval)</code> bars (336 at 1h). Hurst, z-score, Bollinger and RSI all depend on window length, so parameters are fitted under indicator conditions that never occur live.</p>
+        <div class="fix"><span class="lbl">Fix</span><p>Slice a fixed trailing window in the backtest loop to match <code>getCandleLimit</code> exactly.</p></div>
+      </div>
+
+      <div class="finding p2">
+        <div class="fhead"><span class="fid">P2-3</span><h3>Outcome labelling is a single point sample, and the simulator tests assert against themselves</h3></div>
+        <p class="loc">heartbeatHandler.ts:472–487 · server/simulator.test.ts</p>
+        <p>A signal is scored win/loss purely on price at the horizon, ignoring the path — a trade that ran 5% against you before closing 0.1% ahead is a "win". There is no stop, no target, no MFE/MAE. Separately, the "Simulator Trade Execution Logic" suite never imports <code>executeSimulatorTrade</code>; it re-implements the arithmetic inside each test and asserts against its own copy. Those tests would still pass if the simulator were deleted, which is why P1-1 shipped undetected.</p>
+        <div class="fix"><span class="lbl">Fix</span><p>Record max favourable and max adverse excursion over the horizon and label against a stop/target pair. Rewrite the simulator suite to call the real exported function, including the <code>isRunning</code> gate and insufficient-balance paths.</p></div>
+      </div>
+    </section>
+
+    <section class="stack">
+      <h2>Suggested order of work</h2>
+
+      <div class="tranche">
+        <h3><span class="badge">Tranche 1</span> Make the numbers mean something</h3>
+        <p>Nothing else can be evaluated until these land, because today's metrics can't distinguish a good change from a bad one.</p>
+        <ol class="plan">
+          <li><strong>P0-1</strong> — resolve holds; unblocks λ, hold regret, and the challenger sample.</li>
+          <li><strong>P0-3</strong> — add <code>FEE_BPS</code> to all execution paths.</li>
+          <li><strong>P2-1</strong> — fix the leaking train/test split.</li>
+          <li><strong>P0-2</strong> — move scheduler state into the database; stops the runaway signal cadence and version churn.</li>
+        </ol>
+      </div>
+
+      <div class="tranche">
+        <h3><span class="badge">Tranche 2</span> Fix the felt problem</h3>
+        <p>This is what addresses "the calls come too late" directly, and it is mostly independent of the indicator work.</p>
+        <ol class="plan">
+          <li><strong>P1-1</strong> — target-exposure sizing instead of fraction-of-remaining.</li>
+          <li><strong>P0-4</strong> — time-bound the confirmation window.</li>
+          <li><strong>P2-3</strong> — real tests around the simulator before changing it further.</li>
+        </ol>
+      </div>
+
+      <div class="tranche">
+        <h3><span class="badge">Tranche 3</span> Repair the signal itself</h3>
+        <p>Do this last and re-measure after each step — with Tranche 1 in place you will finally be able to tell whether a change helped.</p>
+        <ol class="plan">
+          <li><strong>P1-3</strong> — reclassify <code>Z-Score Trend</code> (one line, clear win).</li>
+          <li><strong>P1-4</strong> — regime-gate RSI and Bollinger Bands.</li>
+          <li><strong>P1-2</strong> — separate regime filter from entry trigger.</li>
+          <li><strong>P2-2</strong> — align backtest window with production.</li>
+        </ol>
+      </div>
+
+      <div class="tranche">
+        <h3><span class="badge">Beyond</span> Enhancements worth considering after the above</h3>
+        <ul class="plain">
+          <li><strong>Volatility-scaled sizing.</strong> Size by ATR or realised vol so a fixed dollar risk survives regime shifts, rather than a fixed fraction of equity.</li>
+          <li><strong>An explicit exit policy.</strong> Today exits happen only when the composite flips. A trailing stop or time stop would cap the tail losses the current win/loss labelling cannot even see.</li>
+          <li><strong>Retire the modifier stack until it is validated out-of-sample.</strong> The replay script carries its own overfitting caveat, and the README judges the IBIT proxy "directionally ambiguous… does not add signal" — yet it ships in the engine at ×1.20.</li>
+          <li><strong>Recalibrate λ once holds resolve.</strong> The 0.3 default is self-documented as indistinguishable across [0, 1.5] — but that test ran while hold accounting was dead in production, so it deserves a fresh look.</li>
+        </ul>
+      </div>
+    </section>
+
+    <footer>
+      Findings derived from static review of the engine plus instrumented replays of the real <code>generateSignal</code> and <code>computeAllMetrics</code> over synthetic series with known turning points. No live database or exchange history was reachable from this environment; re-run against real candles before acting on any specific figure.
+    </footer>
+
+  </div>
+</div>
