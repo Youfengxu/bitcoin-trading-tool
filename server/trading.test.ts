@@ -17,6 +17,7 @@ import {
   evaluatePromotion,
   type ResolvedSignal,
 } from "./engine/championChallenger";
+import { utcDateKey, utcWeekKey } from "./heartbeatHandler";
 import {
   DEFAULT_STRATEGY_PARAMS,
   deriveChallengerParams,
@@ -691,5 +692,59 @@ describe("Challenger parameter derivation", () => {
   it("champion variant is identity", () => {
     const champ = DEFAULT_STRATEGY_PARAMS;
     expect(deriveChallengerParams(champ, "champion")).toEqual(champ);
+  });
+});
+
+// ─── Scheduled task gating ──────────────────────────────────────────
+// The daily optimizer and weekly report compared their marker against the
+// CURRENT hour / weekday. Once the daily task ran, the marker latched at 0 and
+// `currentHour === 0 && lastOptimizeHour !== currentHour` could never be true
+// again — "once per day" silently meant "once per process restart", which is
+// why the active strategy went unchanged from 2026-06-14 to 2026-08-15.
+describe("Scheduled task gating", () => {
+  it("produces a UTC day key that advances daily", () => {
+    expect(utcDateKey(new Date("2026-08-15T00:00:00Z"))).toBe("2026-08-15");
+    expect(utcDateKey(new Date("2026-08-15T23:59:59Z"))).toBe("2026-08-15");
+    expect(utcDateKey(new Date("2026-08-16T00:00:00Z"))).toBe("2026-08-16");
+  });
+
+  it("produces a week key that advances weekly and survives year ends", () => {
+    const a = utcWeekKey(new Date("2026-08-10T00:00:00Z")); // Monday
+    const b = utcWeekKey(new Date("2026-08-16T00:00:00Z")); // following Sunday
+    const c = utcWeekKey(new Date("2026-08-17T00:00:00Z")); // next Monday
+    expect(a).toBe(b);
+    expect(c).not.toBe(a);
+    // Year boundary must not collide across different years.
+    expect(utcWeekKey(new Date("2026-12-31T00:00:00Z")))
+      .not.toBe(utcWeekKey(new Date("2026-01-01T00:00:00Z")));
+  });
+
+  it("fires the daily task once per day across a long uptime", () => {
+    // Simulate hourly heartbeats for 5 days with no restart.
+    let marker = "";
+    let runs = 0;
+    for (let h = 0; h < 24 * 5; h++) {
+      const now = new Date(Date.UTC(2026, 7, 15) + h * 3600_000);
+      const today = utcDateKey(now);
+      if (now.getUTCHours() === 0 && marker !== today) {
+        marker = today;
+        runs++;
+      }
+    }
+    expect(runs).toBe(5);
+  });
+
+  it("does not re-fire within the same day", () => {
+    let marker = "";
+    let runs = 0;
+    for (let i = 0; i < 4; i++) {
+      const now = new Date(Date.UTC(2026, 7, 15, 0, i * 10));
+      const today = utcDateKey(now);
+      if (now.getUTCHours() === 0 && marker !== today) {
+        marker = today;
+        runs++;
+      }
+    }
+    expect(runs).toBe(1);
   });
 });

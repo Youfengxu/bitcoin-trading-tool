@@ -30,8 +30,37 @@ import { applyExternalModifiers, signalFromScores, type ExternalSignals } from "
 import { executeSignalTrade, getRealVenue } from "./engine/executionVenue";
 import * as db from "./db";
 
-let lastOptimizeHour = -1;
-let lastWeeklyReportDay = -1;
+/**
+ * Date stamps (YYYY-MM-DD / ISO week) of the last completed daily and weekly
+ * task, so each runs at most once per period.
+ *
+ * These were previously `lastOptimizeHour` and `lastWeeklyReportDay`, compared
+ * against the CURRENT hour and weekday. Once the daily task ran, the marker was
+ * set to 0 and `currentHour === 0 && lastOptimizeHour !== currentHour` could
+ * never be true again — so "run once per day" actually meant "run once per
+ * process restart". The active strategy went unchanged from 2026-06-14 to
+ * 2026-08-15 for this reason, and weekly reports had the identical bug.
+ *
+ * Comparing against the date rather than the hour makes the marker advance with
+ * time instead of latching.
+ */
+let lastOptimizeDate = "";
+let lastWeeklyReportWeek = "";
+
+/** UTC calendar day, e.g. "2026-08-15". */
+export function utcDateKey(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+/** UTC year+week, e.g. "2026-W33", so the marker advances across year ends. */
+export function utcWeekKey(d: Date): string {
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  // ISO week: Thursday of the current week determines the year and week number.
+  t.setUTCDate(t.getUTCDate() + 4 - (t.getUTCDay() || 7));
+  const yearStart = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+  const week = Math.ceil(((t.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
+  return `${t.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
+}
 
 // ─── External Signal Fetching ─────────────────────────────────────────
 /**
@@ -212,15 +241,19 @@ export async function handleHeartbeat() {
     // 3. Champion-challenger promotion check (cheap; just a stats test on resolved signals).
     await runPromotionCheck();
 
-    // 4. Run optimization once per day at hour 0 — always runs regardless of schedule setting.
-    if (currentHour === 0 && lastOptimizeHour !== currentHour) {
-      lastOptimizeHour = currentHour;
+    // 4. Run optimization once per UTC day at hour 0 — always runs regardless
+    //    of the schedule setting.
+    const today = utcDateKey(now);
+    if (currentHour === 0 && lastOptimizeDate !== today) {
+      lastOptimizeDate = today;
       await runOptimization();
     }
 
-    // 4. Generate weekly report on Sundays — always runs regardless of schedule setting.
-    if (currentDay === 0 && lastWeeklyReportDay !== currentDay) {
-      lastWeeklyReportDay = currentDay;
+    // 5. Generate the weekly report on Sundays — always runs regardless of the
+    //    schedule setting.
+    const thisWeek = utcWeekKey(now);
+    if (currentDay === 0 && lastWeeklyReportWeek !== thisWeek) {
+      lastWeeklyReportWeek = thisWeek;
       await generateWeeklyReport();
     }
   } catch (error) {
