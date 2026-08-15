@@ -66,6 +66,7 @@ services:
       OKX_DEMO: ${OKX_DEMO:-1}
       EXECUTION_VENUE: ${EXECUTION_VENUE:-internal}
       TRADING_FEE_BPS: ${TRADING_FEE_BPS:-0}
+      OPTIMIZER_FEE_BPS: ${OPTIMIZER_FEE_BPS:-10}
     ports:
       - "127.0.0.1:${APP_PORT:-3002}:3000"
 

@@ -6,9 +6,25 @@
  *
  *     riskAdjustedReturn = totalReturn − λ × holdRegret
  *
- * where holdRegret is the sum of |next-bar return| across all candles where the
- * strategy emitted a "hold". λ is the opportunity-cost weight (calibrated in
- * server/scripts/lambdaSensitivity.ts).
+ * where totalReturn is now NET OF TRADING COSTS, and holdRegret is the sum of
+ * |next-bar return| across all candles where the strategy emitted a "hold". λ is
+ * the opportunity-cost weight (calibrated in scripts/lambdaSensitivity.ts).
+ *
+ * ── Why costs must be modelled here ───────────────────────────────────
+ * Until 2026-08-15 this backtest transacted at the mid price with no fee. That
+ * made the objective a one-way ratchet toward turnover: the λ term actively
+ * penalises holding, while trading was free. The optimizer did exactly what it
+ * was asked to and drove minConfidence to 0.30 — the floor of its own search
+ * range — which on live data produced 695 trades in 93 days. At OKX's 0.10%
+ * taker rate that turnover costs roughly 3.3% of the seed per quarter, enough
+ * to erase the strategy's entire measured edge.
+ *
+ * The fee charged here is deliberately INDEPENDENT of TRADING_FEE_BPS, which
+ * governs what the paper simulator charges and therefore the continuity of the
+ * recorded track record. Those are different questions. The paper ledger may
+ * legitimately stay fee-free to keep one equity curve comparable over time, but
+ * the optimizer is choosing parameters to run against a real exchange and must
+ * always assume real costs. Override with OPTIMIZER_FEE_BPS.
  */
 
 import type { StrategyParameters } from "../../shared/tradingTypes";
@@ -33,6 +49,30 @@ export interface BacktestResult {
   riskAdjustedReturn: number;
   /** Risk-adjusted return projected to a weekly cadence (objective normalised by duration). */
   riskAdjustedWeekly: number;
+  /** Total trading fees charged during the backtest, in the same units as initialCash. */
+  feesPaid: number;
+  /** Gross notional transacted. feesPaid ≈ turnoverUsd × feeRate. */
+  turnoverUsd: number;
+  /** Per-side fee rate applied, as a decimal (0.001 = 0.10%). */
+  feeRate: number;
+}
+
+/**
+ * Per-side trading cost the optimizer assumes, as a decimal.
+ *
+ * Defaults to 10 bps — OKX spot Lv1 taker (0.100%), the rate this strategy
+ * pays since it places market orders. Set OPTIMIZER_FEE_BPS to match a
+ * different VIP tier; `pnpm okx:check` prints the account's actual rate.
+ *
+ * Setting this to 0 restores the old fee-blind behaviour and is only sensible
+ * for isolating the cost term's effect in analysis.
+ */
+export function getOptimizerFeeRate(): number {
+  const raw = process.env.OPTIMIZER_FEE_BPS;
+  if (raw === undefined) return 0.001;
+  const bps = parseFloat(raw);
+  if (isNaN(bps) || bps < 0) return 0.001;
+  return bps / 10000;
 }
 
 interface BacktestTrade {
@@ -67,7 +107,8 @@ function backtest(
   candles: CandleData[],
   params: StrategyParameters,
   initialCash = 10000,
-  lambda = OPPORTUNITY_COST_LAMBDA
+  lambda = OPPORTUNITY_COST_LAMBDA,
+  feeRate = getOptimizerFeeRate()
 ): BacktestResult {
   let cash = initialCash;
   let btc = 0;
@@ -78,6 +119,8 @@ function backtest(
 
   let holdRegret = 0;
   let holdCount = 0;
+  let feesPaid = 0;
+  let turnoverUsd = 0;
 
   // SMA-200 needs 200 prior candles before the first valid signal.
   const startIdx = Math.min(200, candles.length - 1);
@@ -100,16 +143,23 @@ function backtest(
     if (drawdown > maxDrawdown) maxDrawdown = drawdown;
 
     if (signal.signal === "buy" && cash > 0) {
+      // Fee is taken out of the notional, so it buys less BTC than the cash spent.
       const tradeAmount = cash * params.maxPositionPct;
-      const btcBought = tradeAmount / price;
+      const fee = tradeAmount * feeRate;
+      const btcBought = (tradeAmount - fee) / price;
       cash -= tradeAmount;
       btc += btcBought;
+      feesPaid += fee;
+      turnoverUsd += tradeAmount;
       trades.push({ type: "buy", price, ts: candles[i].openTime });
     } else if (signal.signal === "sell" && btc > 0) {
       const btcToSell = btc * params.maxPositionPct;
-      const usdReceived = btcToSell * price;
+      const gross = btcToSell * price;
+      const fee = gross * feeRate;
       btc -= btcToSell;
-      cash += usdReceived;
+      cash += gross - fee;
+      feesPaid += fee;
+      turnoverUsd += gross;
       trades.push({ type: "sell", price, ts: candles[i].openTime });
     } else if (signal.signal === "hold" && i + 1 < candles.length) {
       // Opportunity cost: absolute price move over the next bar
@@ -164,6 +214,9 @@ function backtest(
     holdCount,
     riskAdjustedReturn,
     riskAdjustedWeekly,
+    feesPaid,
+    turnoverUsd,
+    feeRate,
   };
 }
 
@@ -204,6 +257,11 @@ export interface WalkForwardOptions {
   lambda?: number;
   rngSeed?: number;
   variationCount?: number;
+  /**
+   * Per-side trading cost as a decimal. Defaults to the OPTIMIZER_FEE_BPS
+   * setting (10 bps). Pass 0 only to reproduce the old fee-blind behaviour.
+   */
+  feeRate?: number;
 }
 
 /**
@@ -224,6 +282,7 @@ export function walkForwardOptimize(
     lambda = OPPORTUNITY_COST_LAMBDA,
     rngSeed,
     variationCount = 16,
+    feeRate = getOptimizerFeeRate(),
   } = options;
 
   const base = currentParams ?? DEFAULT_STRATEGY_PARAMS;
@@ -233,13 +292,15 @@ export function walkForwardOptimize(
 
   const rng = makeRng(rngSeed);
   const variations = generateParamVariations(base, variationCount, rng);
-  const trainResults = variations.map((p) => backtest(trainData, p, 10000, lambda));
+  const trainResults = variations.map((p) => backtest(trainData, p, 10000, lambda, feeRate));
 
   // Rank by risk-adjusted weekly return (new objective)
   trainResults.sort((a, b) => b.riskAdjustedWeekly - a.riskAdjustedWeekly);
 
   const topCandidates = trainResults.slice(0, 4);
-  const testResults = topCandidates.map((tr) => backtest(testData, tr.params, 10000, lambda));
+  const testResults = topCandidates.map((tr) =>
+    backtest(testData, tr.params, 10000, lambda, feeRate)
+  );
   testResults.sort((a, b) => b.riskAdjustedWeekly - a.riskAdjustedWeekly);
 
   return {

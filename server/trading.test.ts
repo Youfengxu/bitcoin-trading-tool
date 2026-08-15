@@ -4,7 +4,12 @@ import {
   computeAllMetrics, type CandleData,
 } from "./engine/technicalAnalysis";
 import { generateSignal, type SignalOutput } from "./engine/signalGenerator";
-import { walkForwardOptimize, validateSignals } from "./engine/walkForwardOptimizer";
+import {
+  walkForwardOptimize,
+  validateSignals,
+  backtest,
+  getOptimizerFeeRate,
+} from "./engine/walkForwardOptimizer";
 import {
   computeReward,
   pairedTTest,
@@ -299,6 +304,90 @@ describe("Walk-Forward Optimizer", () => {
     expect(p.maxPositionPct).toBeLessThanOrEqual(1);
     expect(p.minConfidence).toBeGreaterThan(0);
     expect(p.minConfidence).toBeLessThanOrEqual(1);
+  });
+});
+
+// ─── Optimizer trading costs ────────────────────────────────────────
+// The optimizer used to transact at the mid price with no fee, which made its
+// objective a one-way ratchet toward turnover: holding was penalised by the λ
+// term while trading was free.
+describe("Optimizer trading costs", () => {
+  const candles = generateCandles(300, 50000, 300);
+
+  it("charges a fee on every trade", () => {
+    const withFee = backtest(candles, DEFAULT_STRATEGY_PARAMS, 10000, 0, 0.001);
+    if (withFee.totalTrades === 0) return; // nothing to charge on this fixture
+    expect(withFee.feesPaid).toBeGreaterThan(0);
+    expect(withFee.turnoverUsd).toBeGreaterThan(0);
+  });
+
+  it("charges fees proportional to turnover", () => {
+    const r = backtest(candles, DEFAULT_STRATEGY_PARAMS, 10000, 0, 0.001);
+    if (r.totalTrades === 0) return;
+    expect(r.feesPaid).toBeCloseTo(r.turnoverUsd * 0.001, 6);
+  });
+
+  it("reduces net return relative to a fee-free run", () => {
+    const free = backtest(candles, DEFAULT_STRATEGY_PARAMS, 10000, 0, 0);
+    const paid = backtest(candles, DEFAULT_STRATEGY_PARAMS, 10000, 0, 0.001);
+    expect(free.feesPaid).toBe(0);
+    if (paid.totalTrades === 0) return;
+    expect(paid.totalReturn).toBeLessThan(free.totalReturn);
+  });
+
+  it("charges more as the fee rate rises", () => {
+    const cheap = backtest(candles, DEFAULT_STRATEGY_PARAMS, 10000, 0, 0.001);
+    const dear = backtest(candles, DEFAULT_STRATEGY_PARAMS, 10000, 0, 0.0026);
+    if (cheap.totalTrades === 0) return;
+    expect(dear.feesPaid).toBeGreaterThan(cheap.feesPaid);
+    expect(dear.totalReturn).toBeLessThan(cheap.totalReturn);
+  });
+
+  it("leaves the signal stream untouched — only the P&L changes", () => {
+    // Fees must not alter which signals fire, or the comparison above would be
+    // measuring two different strategies rather than two cost assumptions.
+    const free = backtest(candles, DEFAULT_STRATEGY_PARAMS, 10000, 0, 0);
+    const paid = backtest(candles, DEFAULT_STRATEGY_PARAMS, 10000, 0, 0.001);
+    expect(paid.totalTrades).toBe(free.totalTrades);
+    expect(paid.holdCount).toBe(free.holdCount);
+    expect(paid.holdRegret).toBeCloseTo(free.holdRegret, 10);
+  });
+
+  it("defaults to OKX's 10bps taker rate", () => {
+    const saved = process.env.OPTIMIZER_FEE_BPS;
+    delete process.env.OPTIMIZER_FEE_BPS;
+    expect(getOptimizerFeeRate()).toBe(0.001);
+    process.env.OPTIMIZER_FEE_BPS = "26";
+    expect(getOptimizerFeeRate()).toBeCloseTo(0.0026, 10);
+    process.env.OPTIMIZER_FEE_BPS = "0";
+    expect(getOptimizerFeeRate()).toBe(0);
+    process.env.OPTIMIZER_FEE_BPS = "nonsense";
+    expect(getOptimizerFeeRate()).toBe(0.001); // falls back rather than becoming NaN
+    if (saved === undefined) delete process.env.OPTIMIZER_FEE_BPS;
+    else process.env.OPTIMIZER_FEE_BPS = saved;
+  });
+
+  it("is independent of TRADING_FEE_BPS", () => {
+    // The paper ledger's fee and the optimizer's cost assumption answer
+    // different questions and must not be coupled.
+    const saved = process.env.OPTIMIZER_FEE_BPS;
+    delete process.env.OPTIMIZER_FEE_BPS;
+    process.env.TRADING_FEE_BPS = "0";
+    expect(getOptimizerFeeRate()).toBe(0.001);
+    delete process.env.TRADING_FEE_BPS;
+    if (saved !== undefined) process.env.OPTIMIZER_FEE_BPS = saved;
+  });
+
+  it("is deterministic for a given seed", () => {
+    const a = walkForwardOptimize(candles, DEFAULT_STRATEGY_PARAMS, { rngSeed: 42 });
+    const b = walkForwardOptimize(candles, DEFAULT_STRATEGY_PARAMS, { rngSeed: 42 });
+    expect(b.bestResult.riskAdjustedWeekly).toBe(a.bestResult.riskAdjustedWeekly);
+    expect(b.bestParams.minConfidence).toBe(a.bestParams.minConfidence);
+  });
+
+  it("reports the fee rate it used", () => {
+    const r = walkForwardOptimize(candles, DEFAULT_STRATEGY_PARAMS, { rngSeed: 7, feeRate: 0.0026 });
+    expect(r.bestResult.feeRate).toBe(0.0026);
   });
 });
 
