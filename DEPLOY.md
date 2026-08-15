@@ -101,7 +101,7 @@ are shortcuts for the commands, not automation around them.
 ```bash
 pnpm dev             # local server, hot reload
 pnpm verify          # tsc --noEmit && vitest run  — run before every push
-pnpm deploy          # ssh k11 → git pull --ff-only && docker compose up -d --build
+pnpm deploy:run      # ssh k11 → git pull --ff-only && docker compose up -d --build
 pnpm deploy:status   # deployed commit + container status
 pnpm deploy:logs     # last 40 lines of the app log
 ```
@@ -136,7 +136,13 @@ cd /opt/btc-trading
 git pull
 docker compose up -d --build
 ```
-Or `pnpm deploy` from the Mac, which runs exactly this over ssh.
+Or `pnpm deploy:run` from the Mac, which runs exactly this over ssh.
+
+> The script is named `deploy:run`, not `deploy`, because `pnpm deploy` is a
+> built-in pnpm command (workspace package deployment) that shadows any script
+> of the same name — it fails with `ERR_PNPM_CANNOT_DEPLOY` instead of running
+> yours. `deploy:run` also refuses to execute on k11 itself, since it ssh-es
+> into k11 and the host has no pnpm; use the two commands above there.
 
 ### Reset simulator
 Use the in-app "Reset Simulator" button, or:
