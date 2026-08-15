@@ -110,6 +110,41 @@ async function main() {
     fail("balance", e);
     const code = e instanceof OkxApiError ? e.code : null;
     console.log("");
+
+    // 50119/50101 mean the key is not registered on THIS site. Rather than
+    // making the reader guess which of four hosts their account lives on, try
+    // them. All candidates are OKX-owned, and the same signed read is sent.
+    if (code === "50119" || code === "50101") {
+      console.log("  The key is not registered on this site. Probing the other OKX sites...\n");
+      const candidates = [
+        ["https://www.okx.com", "global"],
+        ["https://my.okx.com", "EEA / SG and others"],
+        ["https://app.okx.com", "US"],
+        ["https://tr.okx.com", "TR"],
+      ];
+      let found: string | null = null;
+      for (const [baseUrl, label] of candidates) {
+        if (baseUrl === cfg.baseUrl) continue;
+        try {
+          await okx.fetchBalances({ ...cfg, baseUrl });
+          console.log(`    ✓ ${baseUrl.padEnd(22)} ${label} — KEY WORKS HERE`);
+          found = baseUrl;
+        } catch (probeErr) {
+          const pc = probeErr instanceof OkxApiError ? probeErr.code : "?";
+          console.log(`    ✗ ${baseUrl.padEnd(22)} ${label} (${pc})`);
+        }
+      }
+      if (found) {
+        console.log(`\n  → Set OKX_BASE_URL=${found} in .env and re-run.`);
+        console.log("    Do not infer the site from your country; use the host you log in at.");
+      } else {
+        console.log("\n  → The key was not recognised on any OKX site. It was likely deleted,");
+        console.log("    regenerated, or only partially pasted. Create a fresh key.");
+      }
+      console.log("");
+      return;
+    }
+
     if (code && AUTH_HINTS[code]) {
       console.log(`  OKX error ${code}: ${AUTH_HINTS[code]}`);
     } else {

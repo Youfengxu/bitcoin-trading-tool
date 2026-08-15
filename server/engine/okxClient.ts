@@ -22,10 +22,18 @@
  * the simulated environment and vice versa.
  *
  * ── Regional sites ────────────────────────────────────────────────────
- * OKX operates independent regional sites and an account only works against the
- * site it was registered on. Singapore accounts use the global site
- * (https://www.okx.com), which is the default here. Override with OKX_BASE_URL
- * for EEA (my.okx.com), US (app.okx.com) or TR (tr.okx.com).
+ * OKX operates independent regional sites and an account only authenticates
+ * against the site it was registered on. A key from the wrong site fails with
+ * 50119 "API key doesn't exist" — the key is real, just not real *here*.
+ *
+ * Do not infer the site from the country. Read it from the URL bar while logged
+ * in: an account managing keys at my.okx.com/en-sg is on my.okx.com, whatever
+ * "Singapore" might suggest about the global site. OKX_BASE_URL must match.
+ *
+ *   https://www.okx.com   global
+ *   https://my.okx.com    used by EEA and SG accounts among others
+ *   https://app.okx.com   US
+ *   https://tr.okx.com    TR
  *
  * Credentials are read from the environment only. They are never logged, never
  * written to the database, and never included in error messages.
