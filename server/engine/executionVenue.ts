@@ -6,18 +6,33 @@
  * heartbeatHandler.ts and routers.ts — which meant the scheduled path and the
  * manual "Generate Signal" button could drift apart silently.
  *
- * Three venues, selected by the EXECUTION_VENUE environment variable:
+ * ── Two books, one signal stream ──────────────────────────────────────
+ * The paper ledger ALWAYS runs — it is the analysis baseline. EXECUTION_VENUE
+ * decides whether a second, real book runs beside it:
  *
- *   internal   (default)  Pure in-database paper ledger. Current behaviour.
- *   okx-demo             Real orders against OKX's simulated environment.
- *                        Real order book, real rounding, real rejections,
- *                        real fees — no real money.
- *   okx-live             Real orders against the real account.
+ *   internal   (default)  Paper ledger only. Current behaviour.
+ *   okx-demo             Paper ledger AND real orders against OKX's simulated
+ *                        environment — real order book, real rounding, real
+ *                        rejections, real fees, no real money.
+ *   okx-live             Paper ledger AND real orders against the real account.
  *
- * The intended progression is internal → okx-demo → okx-live, running okx-demo
- * alongside the internal ledger long enough to see how far the two diverge. That
- * divergence is the execution error a backtest cannot model: slippage, partial
- * fills, minimum sizes, and the latency between deciding and filling.
+ * Each book has its own row in simulator_state and its own trades, tagged by
+ * venue. They size independently against their own holdings, so they drift
+ * apart as execution reality diverges from theory. That drift is precisely the
+ * error a backtest cannot model: slippage, partial fills, minimum sizes, and
+ * the latency between deciding and filling.
+ *
+ * ── Lockstep ──────────────────────────────────────────────────────────
+ * When a real venue is configured it executes FIRST, and if it does not fill —
+ * rejected, undersized, unreachable — the paper book skips the trade too. The
+ * two books therefore always hold the same set of trades, differing only in
+ * execution quality. Without this the paper book would accumulate trades
+ * reality never took, and the gap between the curves would stop being a
+ * measurement of anything.
+ *
+ * The paper book still executes at the REFERENCE price with its own fee
+ * assumption rather than copying the venue's fill. Copying the fill would make
+ * the two curves identical by construction and measure nothing.
  *
  * SAFETY: okx-live is never selected implicitly. It requires
  * EXECUTION_VENUE=okx-live *and* OKX_DEMO to be unset/0, and it logs loudly at
@@ -236,6 +251,64 @@ class OkxVenue implements ExecutionVenue {
 
 // ─── Selection ────────────────────────────────────────────────────────
 
+let cachedReal: ExecutionVenue | null = null;
+let cachedResolved = false;
+
+/**
+ * The real-money (or demo-money) venue, if one is configured. Null means the
+ * paper ledger is the only book.
+ *
+ * This is separate from getExecutionVenue() because the paper ledger ALWAYS
+ * runs — it is the analysis baseline. Configuring OKX adds a second book beside
+ * it rather than replacing it.
+ */
+export function getRealVenue(): ExecutionVenue | null {
+  if (cachedResolved) return cachedReal;
+  cachedResolved = true;
+  const v = resolveRealVenue();
+  cachedReal = v;
+  return cachedReal;
+}
+
+function resolveRealVenue(): ExecutionVenue | null {
+  const requested = (process.env.EXECUTION_VENUE ?? "internal").toLowerCase();
+  if (requested !== "okx-demo" && requested !== "okx-live") return null;
+
+  const cfg = okx.getOkxConfig();
+  if (!cfg) {
+    console.error(
+      `[ExecutionVenue] EXECUTION_VENUE=${requested} but OKX_API_KEY / OKX_SECRET_KEY / ` +
+      `OKX_PASSPHRASE are not all set. Paper ledger only.`
+    );
+    return null;
+  }
+  // Guard against the dangerous mismatch: asking for demo while holding a live
+  // key, or asking for live while OKX_DEMO=1 silently routes to the simulator.
+  if (requested === "okx-demo" && !cfg.demo) {
+    console.error(
+      "[ExecutionVenue] EXECUTION_VENUE=okx-demo requires OKX_DEMO=1 (and a Demo Trading " +
+      "API key). Refusing to trade a live account by accident — paper ledger only."
+    );
+    return null;
+  }
+  if (requested === "okx-live" && cfg.demo) {
+    console.error(
+      "[ExecutionVenue] EXECUTION_VENUE=okx-live but OKX_DEMO=1. Refusing to guess which " +
+      "you meant — paper ledger only. Unset OKX_DEMO to trade live."
+    );
+    return null;
+  }
+  if (requested === "okx-live") {
+    console.warn(
+      `[ExecutionVenue] ⚠ LIVE TRADING ENABLED on ${cfg.baseUrl} (${cfg.instId}). ` +
+      `Real funds will be spent.`
+    );
+  } else {
+    console.log(`[ExecutionVenue] OKX demo trading enabled (${cfg.instId}).`);
+  }
+  return new OkxVenue(cfg);
+}
+
 let cached: ExecutionVenue | null = null;
 
 /**
@@ -293,9 +366,11 @@ export function getExecutionVenue(): ExecutionVenue {
   return cached;
 }
 
-/** Test seam — clears the memoized venue so env changes take effect. */
+/** Test seam — clears the memoized venues so env changes take effect. */
 export function resetExecutionVenue(): void {
   cached = null;
+  cachedReal = null;
+  cachedResolved = false;
 }
 
 // ─── Shared trade execution ───────────────────────────────────────────
@@ -318,13 +393,59 @@ export async function executeSignalTrade(opts: {
   reasoning?: string;
   signalId?: number;
   ts?: number;
-}): Promise<Fill | null> {
+}): Promise<{ paper: Fill | null; real: Fill | null }> {
   const { action, price, params, reasoning, signalId } = opts;
   const ts = opts.ts ?? Date.now();
-  const venue = getExecutionVenue();
+  const real = getRealVenue();
 
-  let state = await db.getSimulatorState();
-  if (!state) state = (await db.initSimulatorState()) ?? null;
+  // ── Reality first ──────────────────────────────────────────────────
+  // In lockstep mode the paper book only records what actually happened, so a
+  // rejected, undersized or unfilled OKX order means neither book moves. The
+  // difference between the two curves is then purely execution quality —
+  // slippage and fees — rather than trades reality never took.
+  let realFill: Fill | null = null;
+  if (real) {
+    realFill = await executeOnVenue(real, real.name, opts, ts);
+    if (!realFill) {
+      console.warn(
+        `[ExecutionVenue] ${real.name} did not fill — paper book skipped too (lockstep).`
+      );
+      return { paper: null, real: null };
+    }
+  }
+
+  // ── Paper ledger ───────────────────────────────────────────────────
+  // Always runs: it is the analysis baseline. It executes at the reference
+  // price with its own fee assumption, deliberately NOT the venue's fill price,
+  // so the gap between the books measures execution cost.
+  const paperFill = await executeOnVenue(new InternalVenue(), db.INTERNAL_VENUE, opts, ts);
+
+  return { paper: paperFill, real: realFill };
+}
+
+/**
+ * Sizes and executes against one venue, then records the result under that
+ * venue's book. Sizing is unchanged from the original inline implementations:
+ * a buy spends `maxPositionPct` of available cash, a sell disposes of
+ * `maxPositionPct` of BTC held — each measured against that venue's own
+ * holdings, so the two books size independently as they drift apart.
+ */
+async function executeOnVenue(
+  venue: ExecutionVenue,
+  bookName: string,
+  opts: {
+    action: "buy" | "sell";
+    price: number;
+    params: StrategyParameters;
+    reasoning?: string;
+    signalId?: number;
+  },
+  ts: number
+): Promise<Fill | null> {
+  const { action, price, params, reasoning, signalId } = opts;
+
+  let state = await db.getSimulatorState(bookName);
+  if (!state) state = (await db.initSimulatorState(bookName)) ?? null;
   if (!state || !state.isRunning) return null;
 
   // Size against the venue's own view of the account when it has one, so an OKX
@@ -358,20 +479,15 @@ export async function executeSignalTrade(opts: {
 
   const totalValue = after.cashUsd + after.btcHolding * fill.price;
 
-  await db.updateSimulatorState({
-    cashUsd: after.cashUsd,
-    btcHolding: after.btcHolding,
-    totalValueUsd: totalValue,
-    lastPrice: fill.price,
-  });
-
-  const venueNote =
-    venue.name === "internal"
-      ? ""
-      : `\n\n── Execution ──\nvenue: ${venue.name}` +
-        `\norder: ${fill.venueOrderId ?? "n/a"}` +
-        `\nfill: ${fill.btcAmount} BTC @ $${fill.price.toFixed(2)}` +
-        `\nfee: $${fill.feeUsd.toFixed(4)}`;
+  await db.updateSimulatorState(
+    {
+      cashUsd: after.cashUsd,
+      btcHolding: after.btcHolding,
+      totalValueUsd: totalValue,
+      lastPrice: fill.price,
+    },
+    bookName
+  );
 
   await db.insertSimulatorTrade({
     signalId,
@@ -382,8 +498,11 @@ export async function executeSignalTrade(opts: {
     cashAfter: after.cashUsd,
     btcAfter: after.btcHolding,
     totalValueAfter: totalValue,
-    reasoning: reasoning ? `${reasoning}${venueNote}` : venueNote || undefined,
+    reasoning,
     ts,
+    venue: bookName,
+    venueOrderId: fill.venueOrderId,
+    feeUsd: fill.feeUsd,
   });
 
   return fill;

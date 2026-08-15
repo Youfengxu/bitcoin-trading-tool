@@ -191,45 +191,72 @@ export async function getPendingSignals() {
 }
 
 // ─── Simulator State ─────────────────────────────────────────────────
-export async function getSimulatorState() {
+//
+// Every simulator read and write is scoped to a venue. `internal` is the paper
+// ledger and the analysis baseline; `okx-demo` / `okx-live` mirror the real
+// account. Defaulting the parameter to "internal" keeps every existing caller —
+// and the whole pre-2026-08-15 track record — behaving exactly as before.
+
+/** The paper ledger. Also the default for every venue-scoped helper here. */
+export const INTERNAL_VENUE = "internal";
+
+export async function getSimulatorState(venue: string = INTERNAL_VENUE) {
   const db = await getDb();
   if (!db) return null;
-  const result = await db.select().from(simulatorState).limit(1);
+  const result = await db
+    .select()
+    .from(simulatorState)
+    .where(eq(simulatorState.venue, venue))
+    .limit(1);
   return result.length > 0 ? result[0] : null;
 }
 
-export async function initSimulatorState() {
+export async function initSimulatorState(venue: string = INTERNAL_VENUE) {
   const db = await getDb();
   if (!db) return;
-  const existing = await getSimulatorState();
+  const existing = await getSimulatorState(venue);
   if (existing) return existing;
   await db.insert(simulatorState).values({
+    venue,
     cashUsd: 10000, btcHolding: 0, totalValueUsd: 10000,
     seedAmountUsd: 10000, lastPrice: 0, isRunning: true,
   });
-  return getSimulatorState();
+  return getSimulatorState(venue);
 }
 
-export async function updateSimulatorState(update: {
-  cashUsd?: number; btcHolding?: number; totalValueUsd?: number;
-  lastPrice?: number; isRunning?: boolean;
-}) {
+export async function updateSimulatorState(
+  update: {
+    cashUsd?: number; btcHolding?: number; totalValueUsd?: number;
+    lastPrice?: number; isRunning?: boolean;
+  },
+  venue: string = INTERNAL_VENUE
+) {
   const db = await getDb();
   if (!db) return;
-  const state = await getSimulatorState();
+  const state = await getSimulatorState(venue);
   if (!state) return;
   await db.update(simulatorState).set(update).where(eq(simulatorState.id, state.id));
 }
 
-export async function resetSimulator() {
+/** Resets one venue's book. Trades for other venues are left untouched. */
+export async function resetSimulator(venue: string = INTERNAL_VENUE) {
   const db = await getDb();
   if (!db) return;
-  const state = await getSimulatorState();
-  if (!state) { await initSimulatorState(); return; }
+  const state = await getSimulatorState(venue);
+  if (!state) { await initSimulatorState(venue); return; }
   await db.update(simulatorState).set({
     cashUsd: 10000, btcHolding: 0, totalValueUsd: 10000, lastPrice: 0, isRunning: true,
   }).where(eq(simulatorState.id, state.id));
-  await db.delete(simulatorTrades);
+  await db.delete(simulatorTrades).where(eq(simulatorTrades.venue, venue));
+}
+
+/** Venues that currently have a book, so the UI can offer a selector. */
+export async function listSimulatorVenues(): Promise<string[]> {
+  const db = await getDb();
+  if (!db) return [INTERNAL_VENUE];
+  const rows = await db.select({ venue: simulatorState.venue }).from(simulatorState);
+  const venues = rows.map((r) => r.venue);
+  return venues.length > 0 ? venues : [INTERNAL_VENUE];
 }
 
 // ─── Simulator Trades ────────────────────────────────────────────────
@@ -237,23 +264,38 @@ export async function insertSimulatorTrade(trade: {
   signalId?: number; action: "buy" | "sell"; price: number;
   btcAmount: number; usdValue: number; cashAfter: number;
   btcAfter: number; totalValueAfter: number; reasoning?: string; ts: number;
+  venue?: string; venueOrderId?: string; feeUsd?: number;
 }) {
   const db = await getDb();
   if (!db) return;
-  await db.insert(simulatorTrades).values(trade);
+  await db.insert(simulatorTrades).values({
+    ...trade,
+    venue: trade.venue ?? INTERNAL_VENUE,
+    feeUsd: trade.feeUsd ?? 0,
+  });
 }
 
-export async function getRecentTrades(limit: number = 50) {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select().from(simulatorTrades).orderBy(desc(simulatorTrades.ts)).limit(limit);
-}
-
-export async function getTradesInRange(startTs: number, endTs: number) {
+export async function getRecentTrades(limit: number = 50, venue: string = INTERNAL_VENUE) {
   const db = await getDb();
   if (!db) return [];
   return db.select().from(simulatorTrades)
-    .where(and(gte(simulatorTrades.ts, startTs), lte(simulatorTrades.ts, endTs)))
+    .where(eq(simulatorTrades.venue, venue))
+    .orderBy(desc(simulatorTrades.ts)).limit(limit);
+}
+
+export async function getTradesInRange(
+  startTs: number,
+  endTs: number,
+  venue: string = INTERNAL_VENUE
+) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(simulatorTrades)
+    .where(and(
+      eq(simulatorTrades.venue, venue),
+      gte(simulatorTrades.ts, startTs),
+      lte(simulatorTrades.ts, endTs)
+    ))
     .orderBy(desc(simulatorTrades.ts));
 }
 

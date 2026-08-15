@@ -24,6 +24,8 @@ vi.mock("./engine/marketData", () => ({
 }));
 
 vi.mock("./db", () => ({
+  INTERNAL_VENUE: "internal",
+  listSimulatorVenues: vi.fn().mockResolvedValue(["internal"]),
   getActiveStrategyParams: vi.fn().mockResolvedValue(null),
   getAllStrategyVersions: vi.fn().mockResolvedValue([]),
   insertStrategyParams: vi.fn().mockResolvedValue(undefined),

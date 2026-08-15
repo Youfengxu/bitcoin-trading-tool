@@ -27,7 +27,7 @@ import {
 } from "../shared/tradingTypes";
 import { notifyOwner } from "./_core/notification";
 import { applyExternalModifiers, signalFromScores, type ExternalSignals } from "./engine/externalModifiers";
-import { executeSignalTrade, getExecutionVenue } from "./engine/executionVenue";
+import { executeSignalTrade, getRealVenue } from "./engine/executionVenue";
 import * as db from "./db";
 
 let lastOptimizeHour = -1;
@@ -363,9 +363,10 @@ async function runSignalGeneration(candleInterval = "1h") {
     }
 
     if (confirmed && signal.signal !== "hold") {
-      // Execute through the configured venue: internal paper ledger, OKX demo,
-      // or OKX live. Sizing and record-keeping live in engine/executionVenue.ts.
-      const fill = await executeSignalTrade({
+      // Records to the paper ledger always, and to OKX as well when configured.
+      // In lockstep mode a failed OKX order skips the paper book too, so the two
+      // curves only ever differ by execution quality. See engine/executionVenue.ts.
+      const { paper, real } = await executeSignalTrade({
         action: signal.signal,
         price: metrics.price,
         params,
@@ -373,12 +374,16 @@ async function runSignalGeneration(candleInterval = "1h") {
         signalId: signalId ?? undefined,
         ts,
       });
-      if (fill) {
-        console.log(
-          `[Heartbeat] ${getExecutionVenue().name} ${fill.action.toUpperCase()} ` +
-          `${fill.btcAmount.toFixed(8)} BTC @ $${fill.price.toFixed(2)} ` +
-          `(fee $${fill.feeUsd.toFixed(4)})`
-        );
+      const describe = (label: string, f: typeof paper) =>
+        f
+          ? `${label} ${f.action.toUpperCase()} ${f.btcAmount.toFixed(8)} BTC ` +
+            `@ $${f.price.toFixed(2)} (fee $${f.feeUsd.toFixed(4)})`
+          : `${label} no fill`;
+
+      if (paper || real) {
+        const parts = [describe("paper", paper)];
+        if (getRealVenue()) parts.push(describe(getRealVenue()!.name, real));
+        console.log(`[Heartbeat] ${parts.join("  |  ")}`);
       } else {
         console.log(`[Heartbeat] ${signal.signal.toUpperCase()} confirmed but no trade executed`);
       }

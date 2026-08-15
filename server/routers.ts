@@ -202,33 +202,50 @@ export const appRouter = router({
   }),
 
   // ─── Simulator ──────────────────────────────────────────────────────
+  // Every simulator procedure takes an optional `venue`, defaulting to the
+  // paper ledger so existing clients see exactly what they saw before.
+  // `venues` lists the books that exist, for a UI selector.
   simulator: router({
-    state: publicProcedure.query(async () => {
-      let state = await db.getSimulatorState();
-      if (!state) state = (await db.initSimulatorState()) ?? null;
-      if (state && state.btcHolding > 0) {
-        try {
-          const { price } = await fetchCurrentPrice();
-          const totalValue = state.cashUsd + state.btcHolding * price;
-          await db.updateSimulatorState({ totalValueUsd: totalValue, lastPrice: price });
-          return { ...state, totalValueUsd: totalValue, lastPrice: price };
-        } catch { return state; }
-      }
-      return state;
-    }),
+    venues: publicProcedure.query(async () => db.listSimulatorVenues()),
+    state: publicProcedure
+      .input(z.object({ venue: z.string().default(db.INTERNAL_VENUE) }).optional())
+      .query(async ({ input }) => {
+        const venue = input?.venue ?? db.INTERNAL_VENUE;
+        let state = await db.getSimulatorState(venue);
+        if (!state) state = (await db.initSimulatorState(venue)) ?? null;
+        if (state && state.btcHolding > 0) {
+          try {
+            const { price } = await fetchCurrentPrice();
+            const totalValue = state.cashUsd + state.btcHolding * price;
+            await db.updateSimulatorState({ totalValueUsd: totalValue, lastPrice: price }, venue);
+            return { ...state, totalValueUsd: totalValue, lastPrice: price };
+          } catch { return state; }
+        }
+        return state;
+      }),
     trades: publicProcedure
-      .input(z.object({ limit: z.number().default(50) }).optional())
-      .query(async ({ input }) => db.getRecentTrades(input?.limit ?? 50)),
-    reset: publicProcedure.mutation(async () => {
-      await db.resetSimulator();
-      return { success: true };
-    }),
-    toggleRunning: publicProcedure.mutation(async () => {
-      const state = await db.getSimulatorState();
-      if (!state) return { isRunning: false };
-      await db.updateSimulatorState({ isRunning: !state.isRunning });
-      return { isRunning: !state.isRunning };
-    }),
+      .input(z.object({
+        limit: z.number().default(50),
+        venue: z.string().default(db.INTERNAL_VENUE),
+      }).optional())
+      .query(async ({ input }) =>
+        db.getRecentTrades(input?.limit ?? 50, input?.venue ?? db.INTERNAL_VENUE)
+      ),
+    reset: publicProcedure
+      .input(z.object({ venue: z.string().default(db.INTERNAL_VENUE) }).optional())
+      .mutation(async ({ input }) => {
+        await db.resetSimulator(input?.venue ?? db.INTERNAL_VENUE);
+        return { success: true };
+      }),
+    toggleRunning: publicProcedure
+      .input(z.object({ venue: z.string().default(db.INTERNAL_VENUE) }).optional())
+      .mutation(async ({ input }) => {
+        const venue = input?.venue ?? db.INTERNAL_VENUE;
+        const state = await db.getSimulatorState(venue);
+        if (!state) return { isRunning: false };
+        await db.updateSimulatorState({ isRunning: !state.isRunning }, venue);
+        return { isRunning: !state.isRunning };
+      }),
   }),
 
   // ─── Performance ────────────────────────────────────────────────────

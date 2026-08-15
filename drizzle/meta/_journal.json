@@ -50,6 +50,13 @@
       "when": 1778677870522,
       "tag": "0006_jittery_the_captain",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "5",
+      "when": 1786799482292,
+      "tag": "0007_spicy_greymalkin",
+      "breakpoints": true
     }
   ]
 }

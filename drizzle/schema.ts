@@ -94,8 +94,16 @@ export const tradingSignals = mysqlTable("trading_signals", {
 });
 
 // ─── Simulator Portfolio ─────────────────────────────────────────────
+/**
+ * One row per execution venue. The `internal` row is the paper ledger and is
+ * the analysis baseline; `okx-demo` / `okx-live` mirror the real account.
+ *
+ * Existing rows predate this column and default to `internal`, which is what
+ * they were — the entire pre-2026-08-15 track record is the paper book.
+ */
 export const simulatorState = mysqlTable("simulator_state", {
   id: int("id").autoincrement().primaryKey(),
+  venue: varchar("venue", { length: 32 }).notNull().default("internal"),
   cashUsd: double("cashUsd").notNull().default(10000),
   btcHolding: double("btcHolding").notNull().default(0),
   totalValueUsd: double("totalValueUsd").notNull().default(10000),
@@ -109,6 +117,12 @@ export const simulatorState = mysqlTable("simulator_state", {
 // ─── Simulator Trade History ─────────────────────────────────────────
 export const simulatorTrades = mysqlTable("simulator_trades", {
   id: int("id").autoincrement().primaryKey(),
+  /** Which book this fill belongs to: internal | okx-demo | okx-live. */
+  venue: varchar("venue", { length: 32 }).notNull().default("internal"),
+  /** Venue order id, when the venue has one. Null for the paper ledger. */
+  venueOrderId: varchar("venueOrderId", { length: 64 }),
+  /** Fee charged in USD. Zero for the paper ledger unless TRADING_FEE_BPS is set. */
+  feeUsd: double("feeUsd").notNull().default(0),
   signalId: int("signalId"),
   action: mysqlEnum("action", ["buy", "sell"]).notNull(),
   price: double("price").notNull(),
