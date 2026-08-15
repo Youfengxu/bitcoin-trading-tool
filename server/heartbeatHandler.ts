@@ -27,6 +27,7 @@ import {
 } from "../shared/tradingTypes";
 import { notifyOwner } from "./_core/notification";
 import { applyExternalModifiers, signalFromScores, type ExternalSignals } from "./engine/externalModifiers";
+import { executeSignalTrade, getExecutionVenue } from "./engine/executionVenue";
 import * as db from "./db";
 
 let lastOptimizeHour = -1;
@@ -361,44 +362,25 @@ async function runSignalGeneration(candleInterval = "1h") {
       console.log(`[Heartbeat] Signal ${signal.signal.toUpperCase()} awaiting confirmation (1/2)`);
     }
 
-    if (confirmed) {
-      // Execute simulator trade
-      let state = simStateBefore;
-      if (!state) state = (await db.initSimulatorState()) ?? null;
-      if (state && state.isRunning) {
-        if (signal.signal === "buy" && state.cashUsd > 0) {
-          const tradeUsd = state.cashUsd * params.maxPositionPct;
-          const btcAmount = tradeUsd / metrics.price;
-          const newCash = state.cashUsd - tradeUsd;
-          const newBtc = state.btcHolding + btcAmount;
-          const totalValue = newCash + newBtc * metrics.price;
-          await db.updateSimulatorState({
-            cashUsd: newCash, btcHolding: newBtc,
-            totalValueUsd: totalValue, lastPrice: metrics.price,
-          });
-          await db.insertSimulatorTrade({
-            signalId: signalId ?? undefined,
-            action: "buy", price: metrics.price, btcAmount,
-            usdValue: tradeUsd, cashAfter: newCash, btcAfter: newBtc,
-            totalValueAfter: totalValue, reasoning: signal.reasoning, ts,
-          });
-        } else if (signal.signal === "sell" && state.btcHolding > 0) {
-          const btcToSell = state.btcHolding * params.maxPositionPct;
-          const usdReceived = btcToSell * metrics.price;
-          const newCash = state.cashUsd + usdReceived;
-          const newBtc = state.btcHolding - btcToSell;
-          const totalValue = newCash + newBtc * metrics.price;
-          await db.updateSimulatorState({
-            cashUsd: newCash, btcHolding: newBtc,
-            totalValueUsd: totalValue, lastPrice: metrics.price,
-          });
-          await db.insertSimulatorTrade({
-            signalId: signalId ?? undefined,
-            action: "sell", price: metrics.price, btcAmount: btcToSell,
-            usdValue: usdReceived, cashAfter: newCash, btcAfter: newBtc,
-            totalValueAfter: totalValue, reasoning: signal.reasoning, ts,
-          });
-        }
+    if (confirmed && signal.signal !== "hold") {
+      // Execute through the configured venue: internal paper ledger, OKX demo,
+      // or OKX live. Sizing and record-keeping live in engine/executionVenue.ts.
+      const fill = await executeSignalTrade({
+        action: signal.signal,
+        price: metrics.price,
+        params,
+        reasoning: signal.reasoning,
+        signalId: signalId ?? undefined,
+        ts,
+      });
+      if (fill) {
+        console.log(
+          `[Heartbeat] ${getExecutionVenue().name} ${fill.action.toUpperCase()} ` +
+          `${fill.btcAmount.toFixed(8)} BTC @ $${fill.price.toFixed(2)} ` +
+          `(fee $${fill.feeUsd.toFixed(4)})`
+        );
+      } else {
+        console.log(`[Heartbeat] ${signal.signal.toUpperCase()} confirmed but no trade executed`);
       }
 
       // Notify

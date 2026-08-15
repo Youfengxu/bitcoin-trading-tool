@@ -55,8 +55,45 @@ services:
       OAUTH_SERVER_URL: ${OAUTH_SERVER_URL:-}
       VITE_APP_ID: ${VITE_APP_ID:-}
       OWNER_OPEN_ID: ${OWNER_OPEN_ID:-}
+      # OKX exchange. Market data needs no credentials; the rest is only used
+      # when EXECUTION_VENUE routes trades to OKX. Defaults keep trading on the
+      # in-database paper ledger.
+      OKX_BASE_URL: ${OKX_BASE_URL:-https://www.okx.com}
+      OKX_INST_ID: ${OKX_INST_ID:-BTC-USDT}
+      OKX_API_KEY: ${OKX_API_KEY:-}
+      OKX_SECRET_KEY: ${OKX_SECRET_KEY:-}
+      OKX_PASSPHRASE: ${OKX_PASSPHRASE:-}
+      OKX_DEMO: ${OKX_DEMO:-1}
+      EXECUTION_VENUE: ${EXECUTION_VENUE:-internal}
+      TRADING_FEE_BPS: ${TRADING_FEE_BPS:-0}
     ports:
       - "127.0.0.1:${APP_PORT:-3002}:3000"
+
+  # One-off script runner (okxCheck, strategyBacktest, historicalSignalReplay).
+  #
+  # The `app` runtime image contains only dist/ — it has no server/ directory,
+  # so `docker compose run app pnpm tsx server/scripts/...` cannot work. This
+  # service reuses the `build` stage, which has the full source tree and dev
+  # dependencies (tsx included).
+  #
+  # Behind a profile so it never starts with `docker compose up`:
+  #   docker compose run --rm tools pnpm tsx server/scripts/okxCheck.ts
+  tools:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: build
+    profiles: ["tools"]
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: mysql://${MARIADB_USER:-btc}:${MARIADB_PASSWORD}@db:3306/${MARIADB_DATABASE:-btc_trading}
+      OKX_BASE_URL: ${OKX_BASE_URL:-https://www.okx.com}
+      OKX_INST_ID: ${OKX_INST_ID:-BTC-USDT}
+      OKX_API_KEY: ${OKX_API_KEY:-}
+      OKX_SECRET_KEY: ${OKX_SECRET_KEY:-}
+      OKX_PASSPHRASE: ${OKX_PASSPHRASE:-}
+      OKX_DEMO: ${OKX_DEMO:-1}
+    restart: "no"
 
 volumes:
   db_data:

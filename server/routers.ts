@@ -32,6 +32,7 @@ import {
 } from "../shared/tradingTypes";
 import { fetchExternalSignals } from "./heartbeatHandler";
 import { applyExternalModifiers } from "./engine/externalModifiers";
+import { executeSignalTrade, getExecutionVenue } from "./engine/executionVenue";
 import * as db from "./db";
 
 export const appRouter = router({
@@ -644,38 +645,17 @@ export const appRouter = router({
 });
 
 // ─── Helper: Execute Simulator Trade ─────────────────────────────────
+/**
+ * Delegates to the configured execution venue (internal paper ledger, OKX demo,
+ * or OKX live). Sizing and record-keeping live in engine/executionVenue.ts so
+ * this path and the scheduled heartbeat cannot drift apart.
+ */
 async function executeSimulatorTrade(
   action: "buy" | "sell", price: number, reasoning: string, signalId?: number
 ) {
-  let state = await db.getSimulatorState();
-  if (!state) state = (await db.initSimulatorState()) ?? null;
-  if (!state || !state.isRunning) return;
   const activeParams = await db.getActiveStrategyParams();
   const params = activeParams ? (activeParams.params as StrategyParameters) : DEFAULT_STRATEGY_PARAMS;
-
-  if (action === "buy" && state.cashUsd > 0) {
-    const tradeUsd = state.cashUsd * params.maxPositionPct;
-    const btcAmount = tradeUsd / price;
-    const newCash = state.cashUsd - tradeUsd;
-    const newBtc = state.btcHolding + btcAmount;
-    const totalValue = newCash + newBtc * price;
-    await db.updateSimulatorState({ cashUsd: newCash, btcHolding: newBtc, totalValueUsd: totalValue, lastPrice: price });
-    await db.insertSimulatorTrade({
-      signalId, action: "buy", price, btcAmount, usdValue: tradeUsd,
-      cashAfter: newCash, btcAfter: newBtc, totalValueAfter: totalValue, reasoning, ts: Date.now(),
-    });
-  } else if (action === "sell" && state.btcHolding > 0) {
-    const btcToSell = state.btcHolding * params.maxPositionPct;
-    const usdReceived = btcToSell * price;
-    const newCash = state.cashUsd + usdReceived;
-    const newBtc = state.btcHolding - btcToSell;
-    const totalValue = newCash + newBtc * price;
-    await db.updateSimulatorState({ cashUsd: newCash, btcHolding: newBtc, totalValueUsd: totalValue, lastPrice: price });
-    await db.insertSimulatorTrade({
-      signalId, action: "sell", price, btcAmount: btcToSell, usdValue: usdReceived,
-      cashAfter: newCash, btcAfter: newBtc, totalValueAfter: totalValue, reasoning, ts: Date.now(),
-    });
-  }
+  await executeSignalTrade({ action, price, params, reasoning, signalId });
 }
 
 // ─── Helper: Send Telegram Notification ──────────────────────────────
