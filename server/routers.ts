@@ -133,7 +133,7 @@ export const appRouter = router({
 
       // Manual generate always acts immediately (no confirmation buffer).
       if (signal.signal !== "hold") {
-        await executeSimulatorTrade(signal.signal, metrics.price, signal.reasoning, signalId ?? undefined);
+        await executeSimulatorTrade(signal.signal, metrics.price, signal.reasoning, signalId ?? undefined, signal.confidence);
         const updatedSimState = await db.getSimulatorState();
         try {
           await notifyOwner({
@@ -693,11 +693,15 @@ export const appRouter = router({
  * this path and the scheduled heartbeat cannot drift apart.
  */
 async function executeSimulatorTrade(
-  action: "buy" | "sell", price: number, reasoning: string, signalId?: number
+  action: "buy" | "sell", price: number, reasoning: string, signalId?: number,
+  confidence?: number
 ) {
   const activeParams = await db.getActiveStrategyParams();
   const params = activeParams ? (activeParams.params as StrategyParameters) : DEFAULT_STRATEGY_PARAMS;
-  await executeSignalTrade({ action, price, params, reasoning, signalId });
+  await executeSignalTrade({
+    action, price, params, reasoning, signalId, confidence,
+    candleInterval: activeParams?.candleInterval ?? "1h",
+  });
 }
 
 // ─── Helper: Send Telegram Notification ──────────────────────────────

@@ -42,6 +42,17 @@
 import * as db from "../db";
 import * as okx from "./okxClient";
 import type { StrategyParameters } from "../../shared/tradingTypes";
+import {
+  TRADE_COOLDOWN_BARS,
+  MIN_TRADE_NOTIONAL_USD,
+  convictionScaledFraction,
+} from "../../shared/tradingTypes";
+
+/** Candle interval → milliseconds, for measuring the cooldown in bars. */
+const INTERVAL_MS: Record<string, number> = {
+  "5m": 300_000, "15m": 900_000, "30m": 1_800_000,
+  "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000,
+};
 
 // ─── Types ────────────────────────────────────────────────────────────
 
@@ -444,13 +455,58 @@ export async function executeSignalTrade(opts: {
   action: "buy" | "sell";
   price: number;
   params: StrategyParameters;
+  /** Signal confidence, for conviction sizing. Omitted → base size unscaled. */
+  confidence?: number;
+  /** Candle interval, so the cooldown is measured in bars rather than wall time. */
+  candleInterval?: string;
   reasoning?: string;
   signalId?: number;
   ts?: number;
-}): Promise<{ paper: Fill | null; real: Fill | null }> {
+}): Promise<{ paper: Fill | null; real: Fill | null; skipped?: string }> {
   const { action, price, params, reasoning, signalId } = opts;
   const ts = opts.ts ?? Date.now();
   const real = getRealVenue();
+
+  // ── Turnover control ───────────────────────────────────────────────
+  // Both gates are evaluated ONCE, against the paper book, and applied to both
+  // books. The paper ledger is the canonical strategy state; letting each book
+  // gate itself would let them diverge on cooldown or size and break lockstep.
+  const intervalMs = INTERVAL_MS[opts.candleInterval ?? "1h"] ?? 3600_000;
+  const [lastTrade] = await db.getRecentTrades(1, db.INTERNAL_VENUE);
+  if (lastTrade) {
+    const barsSince = (ts - lastTrade.ts) / intervalMs;
+    if (barsSince < TRADE_COOLDOWN_BARS) {
+      const wait = (TRADE_COOLDOWN_BARS - barsSince).toFixed(1);
+      console.log(
+        `[ExecutionVenue] ${action.toUpperCase()} skipped — cooldown ` +
+        `(${barsSince.toFixed(1)}/${TRADE_COOLDOWN_BARS} bars, ${wait} to go)`
+      );
+      return { paper: null, real: null, skipped: "cooldown" };
+    }
+  }
+
+  // ── Conviction sizing ──────────────────────────────────────────────
+  const fraction =
+    opts.confidence === undefined
+      ? params.maxPositionPct
+      : convictionScaledFraction(params.maxPositionPct, opts.confidence, params.minConfidence);
+
+  // ── Minimum notional ───────────────────────────────────────────────
+  let paperState = await db.getSimulatorState(db.INTERNAL_VENUE);
+  if (!paperState) paperState = (await db.initSimulatorState(db.INTERNAL_VENUE)) ?? null;
+  if (!paperState || !paperState.isRunning) return { paper: null, real: null, skipped: "not-running" };
+
+  const notional =
+    action === "buy"
+      ? paperState.cashUsd * fraction
+      : paperState.btcHolding * fraction * price;
+  if (notional < MIN_TRADE_NOTIONAL_USD) {
+    console.log(
+      `[ExecutionVenue] ${action.toUpperCase()} skipped — $${notional.toFixed(2)} ` +
+      `below the $${MIN_TRADE_NOTIONAL_USD} minimum notional`
+    );
+    return { paper: null, real: null, skipped: "too-small" };
+  }
 
   // ── Reality first ──────────────────────────────────────────────────
   // In lockstep mode the paper book only records what actually happened, so a
@@ -459,7 +515,7 @@ export async function executeSignalTrade(opts: {
   // slippage and fees — rather than trades reality never took.
   let realFill: Fill | null = null;
   if (real) {
-    realFill = await executeOnVenue(real, real.name, opts, ts);
+    realFill = await executeOnVenue(real, real.name, opts, ts, fraction);
     if (!realFill) {
       console.warn(
         `[ExecutionVenue] ${real.name} did not fill — paper book skipped too (lockstep).`
@@ -472,7 +528,7 @@ export async function executeSignalTrade(opts: {
   // Always runs: it is the analysis baseline. It executes at the reference
   // price with its own fee assumption, deliberately NOT the venue's fill price,
   // so the gap between the books measures execution cost.
-  const paperFill = await executeOnVenue(new InternalVenue(), db.INTERNAL_VENUE, opts, ts);
+  const paperFill = await executeOnVenue(new InternalVenue(), db.INTERNAL_VENUE, opts, ts, fraction);
 
   return { paper: paperFill, real: realFill };
 }
@@ -494,9 +550,10 @@ async function executeOnVenue(
     reasoning?: string;
     signalId?: number;
   },
-  ts: number
+  ts: number,
+  fraction: number
 ): Promise<Fill | null> {
-  const { action, price, params, reasoning, signalId } = opts;
+  const { action, price, reasoning, signalId } = opts;
 
   let state = await db.getSimulatorState(bookName);
   if (!state) state = (await db.initSimulatorState(bookName)) ?? null;
@@ -512,10 +569,10 @@ async function executeOnVenue(
   let fill: Fill | null = null;
   if (action === "buy") {
     if (holdings.cashUsd <= 0) return null;
-    fill = await venue.buy(holdings.cashUsd * params.maxPositionPct, price);
+    fill = await venue.buy(holdings.cashUsd * fraction, price);
   } else {
     if (holdings.btcHolding <= 0) return null;
-    fill = await venue.sell(holdings.btcHolding * params.maxPositionPct, price);
+    fill = await venue.sell(holdings.btcHolding * fraction, price);
   }
   if (!fill) return null;
 

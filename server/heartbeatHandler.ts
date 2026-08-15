@@ -399,10 +399,12 @@ async function runSignalGeneration(candleInterval = "1h") {
       // Records to the paper ledger always, and to OKX as well when configured.
       // In lockstep mode a failed OKX order skips the paper book too, so the two
       // curves only ever differ by execution quality. See engine/executionVenue.ts.
-      const { paper, real } = await executeSignalTrade({
+      const { paper, real, skipped } = await executeSignalTrade({
         action: signal.signal,
         price: metrics.price,
         params,
+        confidence: signal.confidence,
+        candleInterval,
         reasoning: signal.reasoning,
         signalId: signalId ?? undefined,
         ts,
@@ -418,7 +420,10 @@ async function runSignalGeneration(candleInterval = "1h") {
         if (getRealVenue()) parts.push(describe(getRealVenue()!.name, real));
         console.log(`[Heartbeat] ${parts.join("  |  ")}`);
       } else {
-        console.log(`[Heartbeat] ${signal.signal.toUpperCase()} confirmed but no trade executed`);
+        console.log(
+          `[Heartbeat] ${signal.signal.toUpperCase()} confirmed but no trade executed` +
+          (skipped ? ` (${skipped})` : "")
+        );
       }
 
       // Notify

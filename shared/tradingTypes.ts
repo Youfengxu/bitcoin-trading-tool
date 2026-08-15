@@ -135,6 +135,70 @@ export const OPTIMIZER_LAMBDA = 0;
 export const OPTIMIZER_DRAWDOWN_PENALTY = 0.5;
 
 /**
+ * ── Turnover control and conviction sizing (backtest variant "OPT5") ──
+ *
+ * Two rules applied to every confirmed signal before it is sized and executed.
+ * Measured on 2026-05-15 → 2026-08-15 (live window, BTC −22.7%) plus a held-out
+ * period and 7 rolling 21-day blocks, all at 10bps:
+ *
+ *   variant                          live      held-out   blocks won   mean/block
+ *   A0 baseline (conf 0.30)         −9.75%      +8.20%        —          −0.62%
+ *   OPT9 threshold 0.45 alone       −0.06%      +2.04%       4/7         −0.91%
+ *   OPT5 turnover + conviction      −2.12%      +8.63%       5/7         +0.17%
+ *
+ * The threshold ALONE is worse than the baseline out-of-sample; it is the
+ * combination that is robust. OPT5 was the only variant with a positive mean
+ * block return and the tightest worst block (−1.71% vs the baseline's −4.85%),
+ * and it beat the baseline at every fee level in both regimes. It trades far
+ * less: 37 and 68 trades against 714 and 837.
+ *
+ * These are deliberately NOT part of StrategyParameters and so are not in the
+ * optimizer's search space. The optimizer's job is to pick indicator thresholds;
+ * given the chance it would tune these to zero, exactly as it drove
+ * minConfidence to its floor. They are risk controls, not free parameters.
+ */
+
+/**
+ * Minimum bars between executed trades. At the 1h candle interval this is a
+ * 12-hour cooldown. Measured against the last recorded trade rather than an
+ * in-memory counter, so it survives restarts and redeploys.
+ */
+export const TRADE_COOLDOWN_BARS = 12;
+
+/**
+ * Minimum trade size in USD. Below this, fees and spread dominate the expected
+ * edge and the trade is not worth making. Evaluated against the paper book so
+ * both books skip together and stay in lockstep.
+ */
+export const MIN_TRADE_NOTIONAL_USD = 300;
+
+/**
+ * Conviction sizing: trade size scales with how far confidence clears
+ * minConfidence, from 0.5× the base position at the threshold to 2× at full
+ * confidence. Sizing into strong signals and shrinking marginal ones is where
+ * OPT4's contribution to OPT5 comes from.
+ */
+export const CONVICTION_SIZE_MIN_MULT = 0.5;
+export const CONVICTION_SIZE_MAX_MULT = 2.0;
+
+/**
+ * Scales a base position fraction by conviction. `confidence` and
+ * `minConfidence` are the values the signal generator produced and was
+ * evaluated against; a confidence at the threshold gets the minimum multiplier,
+ * full confidence the maximum. Result is clamped to a valid fraction.
+ */
+export function convictionScaledFraction(
+  baseFraction: number,
+  confidence: number,
+  minConfidence: number
+): number {
+  const span = Math.max(0.01, 1 - minConfidence);
+  const t = Math.max(0, Math.min(1, (confidence - minConfidence) / span));
+  const mult = CONVICTION_SIZE_MIN_MULT + (CONVICTION_SIZE_MAX_MULT - CONVICTION_SIZE_MIN_MULT) * t;
+  return Math.max(0, Math.min(1, baseFraction * mult));
+}
+
+/**
  * Below this absolute return, a hold is considered "correctly cautious"
  * (price stayed in noise). Above it, the hold missed a real move.
  * Used to categorise hold outcomes in the signal validation log.

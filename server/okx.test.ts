@@ -17,6 +17,13 @@ import {
   getOkxConfig,
 } from "./engine/okxClient";
 import { getExecutionVenue, resetExecutionVenue } from "./engine/executionVenue";
+import {
+  convictionScaledFraction,
+  TRADE_COOLDOWN_BARS,
+  MIN_TRADE_NOTIONAL_USD,
+  CONVICTION_SIZE_MIN_MULT,
+  CONVICTION_SIZE_MAX_MULT,
+} from "../shared/tradingTypes";
 
 // ─── Signing ──────────────────────────────────────────────────────────
 
@@ -205,5 +212,61 @@ describe("configuration and venue selection", () => {
     process.env.EXECUTION_VENUE = "binance";
     withCreds(false);
     expect(getExecutionVenue().name).toBe("internal");
+  });
+});
+
+// ─── OPT5: turnover control and conviction sizing ───────────────────
+// The backtest variant that beat the baseline at every fee level in both
+// regimes (5/7 rolling blocks, +0.17% mean vs -0.62%). The raised threshold
+// ALONE was worse than baseline out-of-sample, so these two rules are what
+// make the configuration work — they are not optional trimming.
+describe("Conviction sizing", () => {
+  const base = 0.1461;
+  const minConf = 0.45;
+
+  it("halves the position at the confidence threshold", () => {
+    expect(convictionScaledFraction(base, minConf, minConf)).toBeCloseTo(base * 0.5, 10);
+  });
+
+  it("doubles it at full confidence", () => {
+    expect(convictionScaledFraction(base, 1.0, minConf)).toBeCloseTo(base * 2.0, 10);
+  });
+
+  it("scales monotonically between the two", () => {
+    const f = [0.45, 0.55, 0.7, 0.85, 1.0].map((c) => convictionScaledFraction(base, c, minConf));
+    for (let i = 1; i < f.length; i++) expect(f[i]).toBeGreaterThan(f[i - 1]);
+  });
+
+  it("never exceeds a whole position", () => {
+    expect(convictionScaledFraction(0.8, 1.0, 0.45)).toBeLessThanOrEqual(1);
+    expect(convictionScaledFraction(0.9, 0.99, 0.3)).toBeLessThanOrEqual(1);
+  });
+
+  it("floors at the minimum multiplier below the threshold", () => {
+    // Confidence under minConfidence should not produce a negative size.
+    const f = convictionScaledFraction(base, 0.1, minConf);
+    expect(f).toBeCloseTo(base * CONVICTION_SIZE_MIN_MULT, 10);
+    expect(f).toBeGreaterThan(0);
+  });
+
+  it("tolerates a minConfidence of 1 without dividing by zero", () => {
+    expect(Number.isFinite(convictionScaledFraction(base, 1.0, 1.0))).toBe(true);
+  });
+});
+
+describe("Turnover control constants", () => {
+  it("keeps a cooldown long enough to matter at the 1h interval", () => {
+    expect(TRADE_COOLDOWN_BARS).toBeGreaterThanOrEqual(12); // 12h at 1h candles
+  });
+
+  it("sets a minimum notional well above OKX's minSz", () => {
+    // OKX minSz is 0.00001 BTC (~$0.63). The rule exists to avoid fee-dominated
+    // dust, not merely to satisfy the exchange.
+    expect(MIN_TRADE_NOTIONAL_USD).toBeGreaterThanOrEqual(100);
+  });
+
+  it("multipliers bracket 1.0 so average size is near the base position", () => {
+    expect(CONVICTION_SIZE_MIN_MULT).toBeLessThan(1);
+    expect(CONVICTION_SIZE_MAX_MULT).toBeGreaterThan(1);
   });
 });
