@@ -134,6 +134,15 @@ export function getOptimizerFeeRate(): number {
   return bps / 10000;
 }
 
+/**
+ * Bars consumed building SMA-200 before backtest() will trade. Any slice handed
+ * to it must carry this many bars in FRONT of the period meant to be scored.
+ */
+export const WARMUP_BARS = 200;
+
+/** Minimum scored bars for the held-out re-ranking to be meaningful. */
+export const MIN_SCORED_BARS = 100;
+
 interface BacktestTrade {
   type: "buy" | "sell";
   price: number;
@@ -183,8 +192,8 @@ function backtest(
   let feesPaid = 0;
   let turnoverUsd = 0;
 
-  // SMA-200 needs 200 prior candles before the first valid signal.
-  const startIdx = Math.min(200, candles.length - 1);
+  // SMA-200 needs WARMUP_BARS prior candles before the first valid signal.
+  const startIdx = Math.min(WARMUP_BARS, candles.length - 1);
 
   for (let i = startIdx; i < candles.length; i++) {
     const window = candles.slice(0, i + 1);
@@ -364,7 +373,20 @@ export function walkForwardOptimize(
   const base = currentParams ?? DEFAULT_STRATEGY_PARAMS;
   const splitIdx = Math.floor(candles.length * trainRatio);
   const trainData = candles.slice(0, splitIdx);
-  const testData = candles;
+
+  // Genuinely held out. This was `candles` — the FULL series, training portion
+  // included — so the "validation" step graded candidates on the same data they
+  // were fitted to. Every backtestReturnPct recorded against a strategy version
+  // was that in-sample figure: a forced run on 2026-08-15 reported 93% over six
+  // weeks, against −1.6% to +0.2% from properly held-out runs.
+  //
+  // backtest() discards its first WARMUP_BARS building SMA-200, so the test
+  // slice must carry those bars IN FRONT of the scored period — otherwise a
+  // 30% tail is almost entirely warm-up and scores nothing. Same trap that made
+  // scripts/lambdaSensitivity.ts report a flat 0.00% for every λ.
+  const testStart = Math.max(0, splitIdx - WARMUP_BARS);
+  const testData = candles.slice(testStart);
+  const scoredBars = testData.length - WARMUP_BARS;
 
   const rng = makeRng(rngSeed);
   const variations = generateParamVariations(base, variationCount, rng);
@@ -376,6 +398,23 @@ export function walkForwardOptimize(
   trainResults.sort((a, b) => b.riskAdjustedWeekly - a.riskAdjustedWeekly);
 
   const topCandidates = trainResults.slice(0, 4);
+
+  // Too few scored bars and the re-ranking is noise, not validation. Say so
+  // rather than quietly returning a number that looks like an out-of-sample
+  // result. Callers get the training ranking, clearly labelled by the warning.
+  if (scoredBars < MIN_SCORED_BARS) {
+    console.warn(
+      `[Optimizer] Held-out window is only ${scoredBars} scored bars ` +
+      `(need ${MIN_SCORED_BARS}). Ranking on training results alone — the ` +
+      `reported metrics are IN-SAMPLE. Pass more candles for a real validation.`
+    );
+    return {
+      bestParams: topCandidates[0].params,
+      bestResult: topCandidates[0],
+      allResults: topCandidates,
+    };
+  }
+
   const testResults = topCandidates.map((tr) =>
     backtest(testData, tr.params, 10000, lambda, feeRate, drawdownPenalty)
   );

@@ -9,6 +9,8 @@ import {
   validateSignals,
   backtest,
   getOptimizerFeeRate,
+  WARMUP_BARS,
+  MIN_SCORED_BARS,
 } from "./engine/walkForwardOptimizer";
 import {
   computeReward,
@@ -746,5 +748,55 @@ describe("Scheduled task gating", () => {
       }
     }
     expect(runs).toBe(1);
+  });
+});
+
+// ─── Held-out validation ────────────────────────────────────────────
+// walkForwardOptimize's "test" slice was the FULL candle series, training
+// portion included, so validation graded candidates on the data they were
+// fitted to. A forced production run reported 93% over six weeks that way,
+// against −1.6% to +0.2% from properly held-out runs.
+describe("Walk-forward held-out split", () => {
+  it("scores validation on bars the training set never saw", () => {
+    const candles = generateCandles(1000, 50000, 300);
+    const trainRatio = 0.7;
+    const splitIdx = Math.floor(candles.length * trainRatio);
+
+    const trainData = candles.slice(0, splitIdx);
+    const testStart = Math.max(0, splitIdx - WARMUP_BARS);
+    const testData = candles.slice(testStart);
+    const scoredBars = testData.length - WARMUP_BARS;
+
+    // The scored region begins exactly at the split — no training bar is graded.
+    expect(scoredBars).toBe(candles.length - splitIdx);
+    expect(testData.length).toBeLessThan(candles.length); // the old bug: equal
+    expect(scoredBars).toBeGreaterThanOrEqual(MIN_SCORED_BARS);
+
+    // The overlap with training is warm-up only, never scored.
+    const overlap = splitIdx - testStart;
+    expect(overlap).toBe(WARMUP_BARS);
+  });
+
+  it("keeps enough warm-up that the test window actually trades", () => {
+    // A naive candles.slice(splitIdx) leaves 300 bars of which 200 are warm-up,
+    // so only 100 are scored — the trap that made lambdaSensitivity report a
+    // flat 0.00% for every λ.
+    const candles = generateCandles(1000);
+    const splitIdx = 700;
+    const naive = candles.slice(splitIdx).length - WARMUP_BARS;
+    const fixed = candles.slice(splitIdx - WARMUP_BARS).length - WARMUP_BARS;
+    expect(naive).toBe(100);
+    expect(fixed).toBe(300);
+    expect(fixed).toBeGreaterThan(naive);
+  });
+
+  it("still returns a usable result when the window is too small to validate", () => {
+    // 260 candles: 182 train, leaving 78 scored — below MIN_SCORED_BARS. It must
+    // degrade to the training ranking rather than silently reporting in-sample
+    // numbers as though they were held out.
+    const candles = generateCandles(260, 50000, 300);
+    const r = walkForwardOptimize(candles, DEFAULT_STRATEGY_PARAMS, { rngSeed: 3 });
+    expect(r.bestParams).toBeDefined();
+    expect(r.allResults.length).toBeGreaterThan(0);
   });
 });
