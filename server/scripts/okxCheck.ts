@@ -18,6 +18,7 @@
  */
 
 import * as okx from "../engine/okxClient";
+import { AUTH_HINTS, OkxApiError } from "../engine/okxClient";
 
 const PLACE_ORDER = process.argv.includes("--order");
 
@@ -77,6 +78,25 @@ async function main() {
   }
   ok("mode", cfg.demo ? "DEMO (x-simulated-trading: 1)" : "⚠ LIVE — real funds");
 
+  // Whitespace pasted into .env is invisible in the file and produces the exact
+  // same failure as a wrong credential, so check it before blaming the key.
+  const fields: Array<[string, string]> = [
+    ["OKX_API_KEY", cfg.apiKey],
+    ["OKX_SECRET_KEY", cfg.secretKey],
+    ["OKX_PASSPHRASE", cfg.passphrase],
+  ];
+  let dirty = false;
+  for (const [name, value] of fields) {
+    if (value !== value.trim()) {
+      fail(name, `has leading/trailing whitespace (${value.length} chars, ${value.trim().length} trimmed)`);
+      dirty = true;
+    } else if (/["']/.test(value)) {
+      fail(name, `contains a quote character — .env values should not be quoted`);
+      dirty = true;
+    }
+  }
+  if (!dirty) ok("credential format", "no stray whitespace or quotes");
+
   // ── 3. Private reads ───────────────────────────────────────────────
   console.log("\n3. Private endpoints (read)");
   try {
@@ -88,8 +108,19 @@ async function main() {
     ok("balance", shown || "(all zero — fund the demo account from OKX's UI)");
   } catch (e) {
     fail("balance", e);
-    console.log("\n  Signature failures (code 50113) usually mean the key/secret/passphrase");
-    console.log("  don't match, or a live key is being used with OKX_DEMO=1 (or vice versa).\n");
+    const code = e instanceof OkxApiError ? e.code : null;
+    console.log("");
+    if (code && AUTH_HINTS[code]) {
+      console.log(`  OKX error ${code}: ${AUTH_HINTS[code]}`);
+    } else {
+      console.log("  Could not map that error to a known auth cause. Common ones:");
+      for (const [c, hint] of Object.entries(AUTH_HINTS)) {
+        console.log(`    ${c}  ${hint}`);
+      }
+    }
+    console.log(`\n  Current config: site ${cfg.baseUrl}, ${cfg.demo ? "DEMO" : "LIVE"} mode.`);
+    console.log("  Demo and live need SEPARATE keys; a key from one never works on the other.");
+    console.log("");
     return;
   }
 

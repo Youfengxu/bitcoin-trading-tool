@@ -91,6 +91,27 @@ interface OkxEnvelope<T> {
   data: T[];
 }
 
+/**
+ * OKX authentication error codes, mapped to what actually causes them.
+ *
+ * These arrive on HTTP 401 responses whose body carries the real code. Each one
+ * points at a different fix, and telling them apart is the difference between a
+ * two-minute correction and an afternoon of guessing.
+ */
+export const AUTH_HINTS: Record<string, string> = {
+  "50100": "API key is frozen or the account is restricted",
+  "50101": "the key belongs to a DIFFERENT REGIONAL SITE. An account registered on one OKX site (global / EEA / US / TR) cannot authenticate against another. Check OKX_BASE_URL",
+  "50102": "request timestamp expired — the host clock is more than 30s from OKX's",
+  "50103": "request header OK-ACCESS-KEY is missing",
+  "50104": "request header OK-ACCESS-PASSPHRASE is missing",
+  "50105": "passphrase is incorrect — this is the phrase you chose when creating the key, not your login password",
+  "50111": "OK-ACCESS-KEY is invalid — wrong key string, or a live key used against demo (or vice versa)",
+  "50112": "OK-ACCESS-TIMESTAMP is invalid",
+  "50113": "signature mismatch — usually a wrong secret key, or whitespace pasted into the value",
+  "50114": "invalid authorization — the key lacks the required permission (Read is the minimum)",
+  "50110": "your IP is not on the key's allowlist",
+};
+
 // ─── Request plumbing ─────────────────────────────────────────────────
 
 /**
@@ -161,9 +182,23 @@ export async function signedRequest<T>(
     signal: AbortSignal.timeout(timeoutMs),
   });
 
-  // OKX returns 200 with a non-zero `code` for business errors, and non-200
-  // only for transport/auth failures. Both are surfaced as OkxApiError.
-  if (!res.ok) throw new OkxApiError(String(res.status), res.statusText, path);
+  // OKX returns 200 with a non-zero `code` for business errors, and non-200 for
+  // auth failures — but a non-200 STILL carries a JSON body with the specific
+  // code, and that code is the whole diagnosis. Throwing on res.ok alone
+  // discards it and leaves you with a bare "401 Unauthorized" that could be any
+  // of half a dozen unrelated causes.
+  if (!res.ok) {
+    let code = String(res.status);
+    let msg = res.statusText;
+    try {
+      const body = (await res.json()) as { code?: string; msg?: string };
+      if (body?.code) code = body.code;
+      if (body?.msg) msg = body.msg;
+    } catch {
+      /* body was not JSON — keep the HTTP status */
+    }
+    throw new OkxApiError(code, `${msg}${AUTH_HINTS[code] ? ` — ${AUTH_HINTS[code]}` : ""}`, path);
+  }
   const envelope = (await res.json()) as OkxEnvelope<T>;
   if (envelope.code !== "0") {
     // Order endpoints report per-order failures inside data[0], which carries a
