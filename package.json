@@ -10,10 +10,17 @@
     "check": "tsc --noEmit",
     "format": "prettier --write .",
     "test": "vitest run",
+    "verify": "tsc --noEmit && vitest run",
     "db:push": "drizzle-kit migrate",
     "db:generate": "drizzle-kit generate",
     "replay": "tsx server/scripts/historicalSignalReplay.ts",
-    "replay:82k": "tsx server/scripts/historicalSignalReplay.ts --days=90 --price=82000"
+    "replay:82k": "tsx server/scripts/historicalSignalReplay.ts --days=90 --price=82000",
+    "backtest": "tsx server/scripts/strategyBacktest.ts",
+    "backtest:full": "tsx server/scripts/strategyBacktest.ts --both --walk=21 --fee-bps=10",
+    "okx:check": "tsx --env-file-if-exists=.env server/scripts/okxCheck.ts",
+    "deploy": "ssh k11-services 'cd /opt/btc-trading && git pull --ff-only && docker compose up -d --build'",
+    "deploy:logs": "ssh k11-services 'cd /opt/btc-trading && docker compose logs --tail=40 app'",
+    "deploy:status": "ssh k11-services 'cd /opt/btc-trading && git log --oneline -1 && docker compose ps'"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.693.0",

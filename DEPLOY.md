@@ -92,6 +92,42 @@ show real-time BTC; the Strategy Settings page should let you set the
 heartbeat interval. Wait one heartbeat interval and check `docker compose
 logs app` for a `[Heartbeat]` line.
 
+## Day-to-day workflow (from the Mac)
+
+Develop → verify → push → deploy → check. Deployment stays human-triggered by
+design (homelab `CONSTITUTION.md` R1 pins deploys to the `human` tier); these
+are shortcuts for the commands, not automation around them.
+
+```bash
+pnpm dev             # local server, hot reload
+pnpm verify          # tsc --noEmit && vitest run  — run before every push
+pnpm deploy          # ssh k11 → git pull --ff-only && docker compose up -d --build
+pnpm deploy:status   # deployed commit + container status
+pnpm deploy:logs     # last 40 lines of the app log
+```
+
+Analysis and preflight helpers:
+
+```bash
+pnpm okx:check                  # OKX connectivity; reads .env if present
+pnpm okx:check -- --order       # one min-size round trip (refuses unless OKX_DEMO=1)
+pnpm backtest                   # equity backtest over the live period
+pnpm backtest:full              # + held-out period and rolling-block robustness
+pnpm replay                     # signal precision/recall study
+```
+
+Three things that need more than a `git push`:
+
+- **New environment variable** — add it to `.env.example`, *and* to the service
+  in `docker-compose.yml` (variables are passed through explicitly), *and* set
+  the value in `/opt/btc-trading/.env` on k11 by hand.
+- **Schema change** — run `pnpm db:generate` and commit the file it writes to
+  `drizzle/`. `db:push` is `drizzle-kit migrate`; it only applies migrations
+  that already exist.
+- **New script under `server/`** — the `app` image contains only `dist/`, so run
+  it through the `tools` profile:
+  `docker compose run --rm tools pnpm tsx server/scripts/<name>.ts`
+
 ## Operations
 
 ### Update
@@ -100,6 +136,7 @@ cd /opt/btc-trading
 git pull
 docker compose up -d --build
 ```
+Or `pnpm deploy` from the Mac, which runs exactly this over ssh.
 
 ### Reset simulator
 Use the in-app "Reset Simulator" button, or:
