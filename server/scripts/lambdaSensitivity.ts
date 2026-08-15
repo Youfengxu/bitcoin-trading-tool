@@ -13,18 +13,27 @@
  *
  * Notes:
  *   - Uses a fixed RNG seed so results are reproducible across re-runs.
- *   - Pulls 720 1h candles from Kraken (Kraken's per-request cap). For a longer
- *     window, chain multiple `fetchCandlesFrom` calls — not needed for a first pass.
+ *   - Pulls 1h candles via marketData (OKX paginates past the old 720 cap).
+ *
+ * WARM-UP: backtest() discards its first 200 bars building SMA-200, so a test
+ * slice must carry those 200 bars IN FRONT of the period being measured. The
+ * first version of this script sliced the test set at the split point, leaving
+ * 217 bars of which 200 were warm-up — it scored every λ on 17 bars, produced a
+ * flat 0.00% for all of them, and that flat result is what the "λ makes no
+ * difference" note in shared/tradingTypes.ts was based on.
  */
 
 import { fetchCandles } from "../engine/marketData";
 import { walkForwardOptimize, backtest } from "../engine/walkForwardOptimizer";
 import { DEFAULT_STRATEGY_PARAMS } from "../../shared/tradingTypes";
 
-const LAMBDAS = [0, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0, 1.5];
+const LAMBDAS = [0, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0, 1.5, 3.0];
 const TRAIN_RATIO = 0.7;
 const RNG_SEED = 0xc0ffee;          // arbitrary, but fixed for reproducibility
 const VARIATION_COUNT = 24;          // larger than live optimizer to reduce noise
+const CANDLE_COUNT = 1500;
+/** backtest() consumes this many leading bars building SMA-200 before it trades. */
+const WARMUP_BARS = 200;
 
 type Row = {
   lambda: number;
@@ -40,7 +49,7 @@ type Row = {
 
 async function main() {
   console.log(`Fetching candles…`);
-  const raw = await fetchCandles("1h", 720);
+  const raw = await fetchCandles("1h", CANDLE_COUNT);
   const candles = raw.map((c) => ({
     open: c.open, high: c.high, low: c.low,
     close: c.close, volume: c.volume, openTime: c.openTime,
@@ -49,8 +58,19 @@ async function main() {
 
   const splitIdx = Math.floor(candles.length * TRAIN_RATIO);
   const trainData = candles.slice(0, splitIdx);
-  const testData = candles.slice(splitIdx);
-  console.log(`Split: ${trainData.length} train / ${testData.length} test\n`);
+  // Carry WARMUP_BARS of history in front of the split so backtest() starts
+  // trading exactly at splitIdx and the scored period is genuinely held out.
+  const testData = candles.slice(Math.max(0, splitIdx - WARMUP_BARS));
+  const scoredBars = testData.length - WARMUP_BARS;
+  if (scoredBars < 100) {
+    throw new Error(
+      `Only ${scoredBars} bars would be scored out-of-sample. Raise CANDLE_COUNT.`
+    );
+  }
+  console.log(
+    `Split: ${trainData.length} train (${trainData.length - WARMUP_BARS} scored) / ` +
+    `${scoredBars} scored out-of-sample\n`
+  );
 
   const rows: Row[] = [];
 
@@ -80,7 +100,11 @@ async function main() {
       trainHoldCount: opt.bestResult.holdCount,
     });
 
-    console.log(`test return ${(test.totalReturn * 100).toFixed(2)}% | Sharpe ${test.sharpeRatio.toFixed(2)} | DD ${(test.maxDrawdown * 100).toFixed(2)}% | holds ${test.holdCount}`);
+    console.log(
+      `test return ${(test.totalReturn * 100).toFixed(2)}% | Sharpe ${test.sharpeRatio.toFixed(2)} | ` +
+      `DD ${(test.maxDrawdown * 100).toFixed(2)}% | trades ${test.totalTrades} | holds ${test.holdCount} | ` +
+      `minConf ${opt.bestParams.minConfidence.toFixed(3)}`
+    );
   }
 
   console.log("\n## Results\n");

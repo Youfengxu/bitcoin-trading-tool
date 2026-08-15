@@ -22,6 +22,8 @@ import {
   deriveChallengerParams,
   getValidationHorizonMs,
   MIN_VALIDATION_HORIZON_MS,
+  OPPORTUNITY_COST_LAMBDA,
+  OPTIMIZER_LAMBDA,
   type StrategyParameters,
 } from "../shared/tradingTypes";
 
@@ -388,6 +390,42 @@ describe("Optimizer trading costs", () => {
   it("reports the fee rate it used", () => {
     const r = walkForwardOptimize(candles, DEFAULT_STRATEGY_PARAMS, { rngSeed: 7, feeRate: 0.0026 });
     expect(r.bestResult.feeRate).toBe(0.0026);
+  });
+});
+
+// ─── Opportunity-cost term ──────────────────────────────────────────
+describe("Optimizer hold-regret term", () => {
+  const candles = generateCandles(500, 50000, 300);
+
+  it("uses the mean, not the sum, of missed moves", () => {
+    const r = backtest(candles, DEFAULT_STRATEGY_PARAMS, 10000, 0.3, 0.001);
+    if (r.holdCount === 0) return;
+    expect(r.avgHoldRegret).toBeCloseTo(r.holdRegret / r.holdCount, 10);
+    // The sum grows with hold COUNT, so minimising it means minimising holds —
+    // turnover for its own sake. That was the old objective's failure mode.
+    expect(r.avgHoldRegret).toBeLessThan(r.holdRegret);
+  });
+
+  it("is switched off by default (OPTIMIZER_LAMBDA = 0)", () => {
+    expect(OPTIMIZER_LAMBDA).toBe(0);
+    const r = backtest(candles, DEFAULT_STRATEGY_PARAMS, 10000);
+    // With λ=0 the objective reduces to net-of-fees return.
+    expect(r.riskAdjustedReturn).toBeCloseTo(r.totalReturn, 10);
+  });
+
+  it("still applies the penalty when a caller passes a non-zero λ", () => {
+    const off = backtest(candles, DEFAULT_STRATEGY_PARAMS, 10000, 0, 0.001);
+    const on = backtest(candles, DEFAULT_STRATEGY_PARAMS, 10000, 1.0, 0.001);
+    if (off.holdCount === 0) return;
+    expect(on.riskAdjustedReturn).toBeLessThan(off.riskAdjustedReturn);
+    expect(on.totalReturn).toBeCloseTo(off.totalReturn, 10); // λ never touches P&L
+  });
+
+  it("keeps the per-signal λ separate from the optimizer's", () => {
+    // championChallenger and validateSignals compare variants on the SAME signal
+    // stream, where the term does discriminate; the optimizer's does not.
+    expect(OPPORTUNITY_COST_LAMBDA).toBeGreaterThan(0);
+    expect(OPTIMIZER_LAMBDA).toBe(0);
   });
 });
 

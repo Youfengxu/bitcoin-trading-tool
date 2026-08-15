@@ -24,20 +24,57 @@ export function getCandleLimit(interval: string): number {
 }
 
 /**
- * Opportunity-cost weight (λ) for the optimizer's reward function.
+ * Opportunity-cost weight (λ) for per-signal reward scoring.
  * A hold during a 1% absolute price move is penalised by λ × 1%.
  *
- * Calibrated by server/scripts/lambdaSensitivity.ts. First-pass result on 720
- * recent 1h candles (May 2026, 503 train / 217 test): λ in [0, 1.5] produces
- * nearly identical out-of-sample returns because the current 24-variation
- * random sampler doesn't span the active-vs-passive axis well — λ only differentiates
- * once challenger variants explore wider parameter ranges (Phase 2 work).
+ * Used by championChallenger's reward function and the signal validation log,
+ * where variants are compared on the SAME signal stream so the term does
+ * discriminate between them. The walk-forward optimizer uses OPTIMIZER_LAMBDA
+ * below instead — see the evidence recorded there.
  *
- * 0.3 was chosen as a mid-range default: meaningful enough to be visible in
- * the validation log, small enough not to dominate raw return until the
- * variation pool diversifies.
+ * The earlier note here claimed λ ∈ [0, 1.5] made no out-of-sample difference
+ * because the parameter sampler was too narrow. That diagnosis was wrong: the
+ * sensitivity harness sliced its test set at the split point, leaving 217 bars
+ * of which 200 were consumed as SMA-200 warm-up, so every λ was being scored on
+ * 17 bars of near-nothing. Fixed 2026-08-15.
  */
 export const OPPORTUNITY_COST_LAMBDA = 0.3;
+
+/**
+ * Opportunity-cost weight for the WALK-FORWARD OPTIMIZER specifically. Zero —
+ * the term is switched off there, on evidence.
+ *
+ * The optimizer's objective is `totalReturn − λ × avgHoldRegret`. Measured on
+ * 1440 real 1h candles, sweeping minConfidence 0.30 → 0.70:
+ *
+ *   minConf  trades  netReturn  avgHoldRegret
+ *   0.30       252      0.14%       0.002430
+ *   0.40        89      2.41%       0.002476
+ *   0.55        15      0.17%       0.002615
+ *   0.70         0      0.00%       0.002628   ← market mean |1h move|
+ *
+ * Net return varies 17-fold across that range; avgHoldRegret varies by 8%. As
+ * the strategy holds more, its average missed move simply converges on the
+ * market's own average absolute move — so the normalised term measures market
+ * volatility, not strategy behaviour, and cannot rank candidates. Confirmed
+ * directly: λ from 0 to 300 selects identical parameters and the same −2.66%
+ * out-of-sample result.
+ *
+ * The unnormalised sum it replaced did discriminate, but only on hold COUNT,
+ * which is turnover for its own sake: it made up 98.7% of the objective's
+ * magnitude and pinned minConfidence at 0.30, the floor of the search range —
+ * the single worst point on the return curve above.
+ *
+ * So neither formulation earns its place, and λ=0 leaves the optimizer
+ * maximising net-of-fees return. That surface peaks at minConfidence 0.40–0.45,
+ * which independently matches the strategyBacktest finding that a 0.45
+ * threshold plus turnover control is the most robust configuration.
+ *
+ * Reinstating a working opportunity-cost term needs a measure that varies with
+ * strategy behaviour rather than with market volatility — regret relative to an
+ * achievable benchmark, not to an oracle that catches every move.
+ */
+export const OPTIMIZER_LAMBDA = 0;
 
 /**
  * Below this absolute return, a hold is considered "correctly cautious"

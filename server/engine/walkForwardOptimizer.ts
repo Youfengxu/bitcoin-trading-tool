@@ -4,11 +4,41 @@
  * Backtests strategy parameters on recent data windows and selects the parameter
  * set that maximises the **risk-adjusted return**:
  *
- *     riskAdjustedReturn = totalReturn − λ × holdRegret
+ *     riskAdjustedReturn = totalReturn − λ × avgHoldRegret
  *
- * where totalReturn is now NET OF TRADING COSTS, and holdRegret is the sum of
- * |next-bar return| across all candles where the strategy emitted a "hold". λ is
- * the opportunity-cost weight (calibrated in scripts/lambdaSensitivity.ts).
+ * where totalReturn is NET OF TRADING COSTS and avgHoldRegret is the MEAN
+ * |next-bar return| across candles where the strategy emitted a "hold".
+ *
+ * λ defaults to OPTIMIZER_LAMBDA, which is **0** — the opportunity-cost term is
+ * switched off here, on evidence. The full measurement is recorded on that
+ * constant in shared/tradingTypes.ts; in short, neither formulation works:
+ *
+ *   - As an unnormalised SUM it grew with the NUMBER of holds, so minimising it
+ *     meant minimising hold count — turnover for its own sake. It reached 98.7%
+ *     of the objective's magnitude against 1.3% for money, and pinned
+ *     minConfidence at 0.30, the floor of the search range and the worst point
+ *     on the return curve.
+ *   - As a MEAN it stops rewarding turnover, but it also stops discriminating:
+ *     as a strategy holds more, its average missed move converges on the
+ *     market's own average absolute move. Sweeping minConfidence 0.30 → 0.70
+ *     moves net return 17-fold while avgHoldRegret moves 8%. λ from 0 to 300
+ *     selects identical parameters.
+ *
+ * The mean is kept as the formulation because it is the honest one — it asks
+ * "when the strategy sat out, how big was the move it sat out?" — and because
+ * with λ=0 the term is inert either way. Reinstating it usefully needs a measure
+ * that varies with strategy behaviour rather than with market volatility.
+ *
+ * ── Why regret is |move| and not just missed upside ───────────────────
+ * A hold through a fall is as costly as a hold through a rally: the strategy can
+ * be in BTC or in cash, so a predicted drop is tradable — sell at the top, buy
+ * at the bottom. Both directions are foregone profit, so the absolute move is
+ * the right measure.
+ *
+ * The caveat is that |move| is an ORACLE benchmark: it charges every hold as
+ * though a perfect forecaster captured the entire move. Real regret is that
+ * bound times the strategy's hit rate, and it is that gap — not the direction —
+ * that makes the raw measure unusable as a cost.
  *
  * ── Why costs must be modelled here ───────────────────────────────────
  * Until 2026-08-15 this backtest transacted at the mid price with no fee. That
@@ -28,7 +58,11 @@
  */
 
 import type { StrategyParameters } from "../../shared/tradingTypes";
-import { DEFAULT_STRATEGY_PARAMS, OPPORTUNITY_COST_LAMBDA } from "../../shared/tradingTypes";
+import {
+  DEFAULT_STRATEGY_PARAMS,
+  OPTIMIZER_LAMBDA,
+  OPPORTUNITY_COST_LAMBDA,
+} from "../../shared/tradingTypes";
 import type { CandleData } from "./technicalAnalysis";
 import { computeAllMetrics } from "./technicalAnalysis";
 import { generateSignal } from "./signalGenerator";
@@ -43,9 +77,19 @@ export interface BacktestResult {
   maxDrawdown: number;
   /** Sum of |next-bar return pct| over all candles where signal was "hold". */
   holdRegret: number;
+  /**
+   * holdRegret / holdCount — the average move sat out per hold.
+   *
+   * This, not the raw sum, is what the objective uses. The sum grows with the
+   * NUMBER of holds, so minimising it means minimising hold count; the mean
+   * grows with the SIZE of the moves missed, so minimising it means holding
+   * through quiet stretches and acting in volatile ones. Only the second is
+   * the behaviour the opportunity-cost term was introduced to encourage.
+   */
+  avgHoldRegret: number;
   /** Number of candles where signal was "hold". */
   holdCount: number;
-  /** totalReturn − λ × holdRegret. The optimizer's objective. */
+  /** totalReturn − λ × avgHoldRegret. The optimizer's objective. */
   riskAdjustedReturn: number;
   /** Risk-adjusted return projected to a weekly cadence (objective normalised by duration). */
   riskAdjustedWeekly: number;
@@ -99,15 +143,16 @@ function makeRng(seed?: number): () => number {
 /**
  * Backtest a single parameter set on historical candles.
  *
- * The opportunity-cost term is computed per candle: whenever the strategy says
- * "hold", we record |close[i+1] − close[i]| / close[i] as inaction regret. The
- * sum is then weighted by λ and subtracted from realised totalReturn.
+ * Whenever the strategy says "hold", |close[i+1] − close[i]| / close[i] is
+ * recorded as inaction regret; the MEAN of those is weighted by λ and
+ * subtracted from realised, net-of-fees totalReturn. λ defaults to 0 — see the
+ * module header.
  */
 function backtest(
   candles: CandleData[],
   params: StrategyParameters,
   initialCash = 10000,
-  lambda = OPPORTUNITY_COST_LAMBDA,
+  lambda = OPTIMIZER_LAMBDA,
   feeRate = getOptimizerFeeRate()
 ): BacktestResult {
   let cash = initialCash;
@@ -199,7 +244,12 @@ function backtest(
       : 1;
   const sharpeRatio = stdReturn > 0 ? (avgReturn / stdReturn) * Math.sqrt(365) : 0;
 
-  const riskAdjustedReturn = totalReturn - lambda * holdRegret;
+  // Mean, not sum — see the avgHoldRegret docs on BacktestResult. With the sum,
+  // λ×holdRegret was 0.4523 against a totalReturn of 0.0062 on a 1000-candle
+  // window: 98.7% of the objective's magnitude was the penalty and 1.3% was
+  // money, so candidates were ranked almost purely on how little they held.
+  const avgHoldRegret = holdCount > 0 ? holdRegret / holdCount : 0;
+  const riskAdjustedReturn = totalReturn - lambda * avgHoldRegret;
   const riskAdjustedWeekly = riskAdjustedReturn / weeks;
 
   return {
@@ -211,6 +261,7 @@ function backtest(
     totalTrades: trades.length,
     maxDrawdown,
     holdRegret,
+    avgHoldRegret,
     holdCount,
     riskAdjustedReturn,
     riskAdjustedWeekly,
@@ -279,7 +330,7 @@ export function walkForwardOptimize(
 } {
   const {
     trainRatio = 0.7,
-    lambda = OPPORTUNITY_COST_LAMBDA,
+    lambda = OPTIMIZER_LAMBDA,
     rngSeed,
     variationCount = 16,
     feeRate = getOptimizerFeeRate(),
