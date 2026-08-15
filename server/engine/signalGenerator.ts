@@ -17,6 +17,12 @@ export interface SignalOutput {
   rawSellScore: number;
 }
 
+/**
+ * MACD histogram, in basis points of price, at which the layer reaches full
+ * strength. See the MACD block below for why this is measured against price.
+ */
+const MACD_STRENGTH_SCALE_BPS = 16;
+
 interface SignalComponent {
   name: string;
   direction: "buy" | "sell" | "neutral";
@@ -59,9 +65,34 @@ export function generateSignal(
   }
 
   // 2. MACD Signal
-  if (metrics.macdHist !== null) {
+  //
+  // Strength is measured in BASIS POINTS OF PRICE, not raw price units. The
+  // histogram is denominated in the asset's currency, so the previous
+  // `Math.abs(macdHist) / 100` made this layer's contribution a function of how
+  // expensive the asset happens to be:
+  //
+  //   pair   price     |macdHist|   old strength
+  //   BTC    $63,112      14.05        0.1405
+  //   ETH    $1,885        0.12        0.0012
+  //   SOL    $75.53        0.021       0.0002
+  //   XRP    $1.00         0.0003      0.0000
+  //
+  // One of eight layers therefore contributed nothing on any asset not priced
+  // in the tens of thousands, and the lost contribution dragged the normalised
+  // score under minConfidence: SOL and XRP never exceeded 0.39 against a 0.45
+  // threshold, so they could not trade at all. It also drifted on BTC itself —
+  // the same histogram counts for six times less at $10k than at $63k.
+  //
+  // As a fraction of price the measure is near-identical across assets (median
+  // 5.8–11.8 bps, p90 14–34 bps over 1000 bars), which is what makes it a
+  // sound normalisation rather than a rescaling.
+  if (metrics.macdHist !== null && metrics.price > 0) {
+    const macdBps = (Math.abs(metrics.macdHist) / metrics.price) * 10_000;
+    // 16 bps ≈ full strength. Chosen so BTC's median strength is unchanged
+    // (5.80 bps / 16 = 0.363 against the old 0.366), keeping the deployed
+    // strategy's behaviour on BTC while making the layer work everywhere else.
+    const strength = Math.min(1, macdBps / MACD_STRENGTH_SCALE_BPS);
     if (metrics.macdHist > params.macdBuyThreshold) {
-      const strength = Math.min(1, Math.abs(metrics.macdHist) / 100);
       components.push({
         name: "MACD",
         direction: "buy",
@@ -69,7 +100,6 @@ export function generateSignal(
         reason: `MACD histogram at ${metrics.macdHist.toFixed(2)} shows bullish momentum`,
       });
     } else if (metrics.macdHist < params.macdSellThreshold) {
-      const strength = Math.min(1, Math.abs(metrics.macdHist) / 100);
       components.push({
         name: "MACD",
         direction: "sell",

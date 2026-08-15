@@ -44,6 +44,8 @@ const HISTORY_START = Date.parse("2026-02-15T00:00:00Z");
 /** Split between the held-out (earlier) window and the live window. */
 const LIVE_START = Date.parse("2026-05-15T00:00:00Z");
 const MIN_BARS = 1500;
+/** Always included: the asset every parameter was tuned on. */
+const ANCHOR = "BTC-USDT";
 /** A 6-month high/low range under this is a pegged asset, not something to trade. */
 const PEG_RANGE_PCT = 0.05;
 
@@ -176,27 +178,45 @@ async function main() {
   console.log(`Multi-Asset Backtest — production strategy v10, unchanged, ${(FEE * 10000).toFixed(0)}bps, cooldown ${COOLDOWN_BARS}`);
   console.log("═".repeat(104));
 
-  const candidates = await topPairs(TOP_N);
+  // BTC is always included as the anchor: it is the asset every parameter was
+  // tuned on, so a comparison without it has nothing to compare against. An
+  // earlier run silently dropped it to a transient fetch failure and produced a
+  // ten-asset table with no reference point.
+  const candidates = [ANCHOR, ...(await topPairs(TOP_N)).filter((p) => p !== ANCHOR)];
   const selected: Array<{ instId: string; candles: CandleData[] }> = [];
+  const dropped: Array<[string, string]> = [];
 
-  process.stdout.write("\nSelecting liquid pairs with enough history");
+  console.log("\nSelecting liquid pairs with enough history…");
   for (const instId of candidates) {
     if (selected.length >= TOP_N) break;
-    try {
-      const raw = await okx.fetchCandlesFrom("1h", HISTORY_START, 5000, instId);
-      const candles: CandleData[] = raw.map((c) => ({
-        open: c.open, high: c.high, low: c.low, close: c.close,
-        volume: c.volume, openTime: c.openTime,
-      }));
-      if (candles.length < MIN_BARS) { process.stdout.write("."); continue; }
-      const hi = Math.max(...candles.map((c) => c.high));
-      const lo = Math.min(...candles.map((c) => c.low));
-      if ((hi - lo) / ((hi + lo) / 2) < PEG_RANGE_PCT) { process.stdout.write("s"); continue; } // stablecoin
-      selected.push({ instId, candles });
-      process.stdout.write("+");
-    } catch { process.stdout.write("x"); }
+    let candles: CandleData[] | null = null;
+    let lastErr = "";
+    // Retry: a transient failure must not silently remove an asset from the study.
+    for (let attempt = 0; attempt < 3 && !candles; attempt++) {
+      try {
+        const raw = await okx.fetchCandlesFrom("1h", HISTORY_START, 5000, instId);
+        candles = raw.map((c) => ({
+          open: c.open, high: c.high, low: c.low, close: c.close,
+          volume: c.volume, openTime: c.openTime,
+        }));
+      } catch (e) {
+        lastErr = e instanceof Error ? e.message : String(e);
+        await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+      }
+    }
+    if (!candles) { dropped.push([instId, `fetch failed after 3 tries: ${lastErr}`]); continue; }
+    if (candles.length < MIN_BARS) { dropped.push([instId, `only ${candles.length} bars`]); continue; }
+    const hi = Math.max(...candles.map((c) => c.high));
+    const lo = Math.min(...candles.map((c) => c.low));
+    if ((hi - lo) / ((hi + lo) / 2) < PEG_RANGE_PCT) { dropped.push([instId, "pegged / stablecoin"]); continue; }
+    selected.push({ instId, candles });
   }
-  console.log(`\n  ${selected.length} pairs selected  (+ kept, s = pegged/stablecoin, . = too little history, x = fetch failed)\n`);
+  console.log(`  kept:    ${selected.map((s) => s.instId).join(", ")}`);
+  for (const [id, why] of dropped) console.log(`  dropped: ${id.padEnd(14)} ${why}`);
+  if (!selected.some((s) => s.instId === ANCHOR)) {
+    console.error(`\n  ⚠ ${ANCHOR} is MISSING — the study has no reference asset.`);
+  }
+  console.log("");
 
   const report: Record<string, Result[]> = {};
 
