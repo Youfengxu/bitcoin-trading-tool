@@ -4,10 +4,24 @@
  * Backtests strategy parameters on recent data windows and selects the parameter
  * set that maximises the **risk-adjusted return**:
  *
- *     riskAdjustedReturn = totalReturn − λ × avgHoldRegret
+ *     riskAdjustedReturn = totalReturn − λ × avgHoldRegret − γ × maxDrawdown
  *
  * where totalReturn is NET OF TRADING COSTS and avgHoldRegret is the MEAN
  * |next-bar return| across candles where the strategy emitted a "hold".
+ *
+ * ── Why there is a risk term at all ───────────────────────────────────
+ * Until 2026-08-15 there wasn't one, despite the name: maxDrawdown and
+ * sharpeRatio were computed by the backtest and then discarded at selection
+ * time. Position size was therefore free — raising maxPositionPct could not
+ * lower the score — and successive re-basing rounds walked it to the 50% clamp
+ * ceiling. Sweeping position size with everything else fixed shows why that is
+ * the wrong answer: trade count is unchanged at 53, in-sample return is flat
+ * noise across 10%–50%, while drawdown nearly doubles and Sharpe falls
+ * monotonically. Bigger positions bought risk and nothing else.
+ *
+ * γ defaults to OPTIMIZER_DRAWDOWN_PENALTY (0.5), calibrated in
+ * shared/tradingTypes.ts. It must stay well below 2.0: a risk term large enough
+ * to dominate returns is minimised by never trading at all.
  *
  * λ defaults to OPTIMIZER_LAMBDA, which is **0** — the opportunity-cost term is
  * switched off here, on evidence. The full measurement is recorded on that
@@ -61,6 +75,7 @@ import type { StrategyParameters } from "../../shared/tradingTypes";
 import {
   DEFAULT_STRATEGY_PARAMS,
   OPTIMIZER_LAMBDA,
+  OPTIMIZER_DRAWDOWN_PENALTY,
   OPPORTUNITY_COST_LAMBDA,
 } from "../../shared/tradingTypes";
 import type { CandleData } from "./technicalAnalysis";
@@ -89,7 +104,7 @@ export interface BacktestResult {
   avgHoldRegret: number;
   /** Number of candles where signal was "hold". */
   holdCount: number;
-  /** totalReturn − λ × avgHoldRegret. The optimizer's objective. */
+  /** totalReturn − λ × avgHoldRegret − γ × maxDrawdown. The optimizer's objective. */
   riskAdjustedReturn: number;
   /** Risk-adjusted return projected to a weekly cadence (objective normalised by duration). */
   riskAdjustedWeekly: number;
@@ -153,7 +168,8 @@ function backtest(
   params: StrategyParameters,
   initialCash = 10000,
   lambda = OPTIMIZER_LAMBDA,
-  feeRate = getOptimizerFeeRate()
+  feeRate = getOptimizerFeeRate(),
+  drawdownPenalty = OPTIMIZER_DRAWDOWN_PENALTY
 ): BacktestResult {
   let cash = initialCash;
   let btc = 0;
@@ -249,7 +265,10 @@ function backtest(
   // window: 98.7% of the objective's magnitude was the penalty and 1.3% was
   // money, so candidates were ranked almost purely on how little they held.
   const avgHoldRegret = holdCount > 0 ? holdRegret / holdCount : 0;
-  const riskAdjustedReturn = totalReturn - lambda * avgHoldRegret;
+  // The drawdown term is what makes this genuinely risk-adjusted. Without it,
+  // position size is free and the sampler walks maxPositionPct to its ceiling.
+  const riskAdjustedReturn =
+    totalReturn - lambda * avgHoldRegret - drawdownPenalty * maxDrawdown;
   const riskAdjustedWeekly = riskAdjustedReturn / weeks;
 
   return {
@@ -313,6 +332,11 @@ export interface WalkForwardOptions {
    * setting (10 bps). Pass 0 only to reproduce the old fee-blind behaviour.
    */
   feeRate?: number;
+  /**
+   * Drawdown penalty γ. Defaults to OPTIMIZER_DRAWDOWN_PENALTY. Pass 0 to
+   * reproduce the old risk-blind objective.
+   */
+  drawdownPenalty?: number;
 }
 
 /**
@@ -334,6 +358,7 @@ export function walkForwardOptimize(
     rngSeed,
     variationCount = 16,
     feeRate = getOptimizerFeeRate(),
+    drawdownPenalty = OPTIMIZER_DRAWDOWN_PENALTY,
   } = options;
 
   const base = currentParams ?? DEFAULT_STRATEGY_PARAMS;
@@ -343,14 +368,16 @@ export function walkForwardOptimize(
 
   const rng = makeRng(rngSeed);
   const variations = generateParamVariations(base, variationCount, rng);
-  const trainResults = variations.map((p) => backtest(trainData, p, 10000, lambda, feeRate));
+  const trainResults = variations.map((p) =>
+    backtest(trainData, p, 10000, lambda, feeRate, drawdownPenalty)
+  );
 
   // Rank by risk-adjusted weekly return (new objective)
   trainResults.sort((a, b) => b.riskAdjustedWeekly - a.riskAdjustedWeekly);
 
   const topCandidates = trainResults.slice(0, 4);
   const testResults = topCandidates.map((tr) =>
-    backtest(testData, tr.params, 10000, lambda, feeRate)
+    backtest(testData, tr.params, 10000, lambda, feeRate, drawdownPenalty)
   );
   testResults.sort((a, b) => b.riskAdjustedWeekly - a.riskAdjustedWeekly);
 

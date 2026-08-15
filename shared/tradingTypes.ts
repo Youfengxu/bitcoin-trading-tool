@@ -77,6 +77,64 @@ export const OPPORTUNITY_COST_LAMBDA = 0.3;
 export const OPTIMIZER_LAMBDA = 0;
 
 /**
+ * Drawdown penalty (γ) in the optimizer's objective:
+ *
+ *     objective = totalReturn − λ × avgHoldRegret − γ × maxDrawdown
+ *
+ * Without this the objective had no risk term at all despite being named
+ * "riskAdjustedReturn" — maxDrawdown and sharpeRatio were computed by the
+ * backtest and then discarded at selection time. Position size was therefore
+ * free: the sampler could raise maxPositionPct with no penalty, and successive
+ * re-basing rounds walked it to the 50% clamp ceiling.
+ *
+ * Measured on 1440 real 1h candles, sweeping maxPositionPct with every other
+ * parameter fixed (trade count is identical at 53 — position size does not
+ * change which signals fire, only how much they stake):
+ *
+ *   maxPos   in-sample return   in-sample maxDD   Sharpe   OOS return
+ *    10%          2.43%              2.66%         0.29      −1.24%
+ *    20%          2.49%              3.78%         0.26      −1.81%
+ *    30%          2.34%              4.41%         0.23      −2.11%
+ *    50%          2.44%              5.09%         0.22      −2.34%
+ *
+ * In-sample return is flat noise across the whole range while drawdown nearly
+ * doubles, Sharpe falls monotonically, and out-of-sample return gets steadily
+ * worse. Bigger positions bought risk and nothing else, and a return-only
+ * objective is blind to exactly that.
+ *
+ * Calibrated by simulating 13 successive weekly re-basing rounds — the way
+ * heartbeatHandler actually uses the optimizer, feeding each round's winner in
+ * as the next round's base — then scoring the survivor out-of-sample:
+ *
+ *   γ      final maxPos%   OOS return   OOS maxDD   OOS Sharpe   OOS trades
+ *   0.00       50.0  ←ceiling  −1.62%      4.10%       −0.28          37
+ *   0.25       30.5            −2.05%      4.09%       −0.39          30
+ *   0.50       22.0            +0.20%      1.37%       +0.10           7
+ *   1.00       15.2            −0.10%      1.53%       −0.04           6
+ *   2.00       22.5             0.00%      0.00%        0.00           0  ← degenerate
+ *   4.00       19.2             0.00%      0.00%        0.00           0  ← degenerate
+ *
+ * γ=0 reproduces the bug exactly: position size walks to the 50% clamp ceiling.
+ * Any γ ≥ 0.25 breaks that ratchet. 0.50 was best on this window on all three
+ * of return, drawdown and Sharpe, and is the only setting with a positive
+ * out-of-sample return.
+ *
+ * DO NOT raise this much above 1.0. At γ ≥ 2 the penalty exceeds any achievable
+ * return and the optimizer discovers that a portfolio which never trades has
+ * zero drawdown — it stops trading entirely. The safest portfolio is no
+ * portfolio, and a risk term large enough to dominate will always find that.
+ *
+ * Note the behavioural cost: γ=0.5 takes the strategy from 37 out-of-sample
+ * trades to 7. That is a substantially more passive strategy, consistent with
+ * the separate strategyBacktest finding that turnover control plus a higher
+ * confidence threshold is the most robust configuration — but it is a real
+ * change, not just a scoring tweak.
+ *
+ * One window, one asset. Re-check after a regime change.
+ */
+export const OPTIMIZER_DRAWDOWN_PENALTY = 0.5;
+
+/**
  * Below this absolute return, a hold is considered "correctly cautious"
  * (price stayed in noise). Above it, the hold missed a real move.
  * Used to categorise hold outcomes in the signal validation log.

@@ -24,6 +24,7 @@ import {
   MIN_VALIDATION_HORIZON_MS,
   OPPORTUNITY_COST_LAMBDA,
   OPTIMIZER_LAMBDA,
+  OPTIMIZER_DRAWDOWN_PENALTY,
   type StrategyParameters,
 } from "../shared/tradingTypes";
 
@@ -408,14 +409,14 @@ describe("Optimizer hold-regret term", () => {
 
   it("is switched off by default (OPTIMIZER_LAMBDA = 0)", () => {
     expect(OPTIMIZER_LAMBDA).toBe(0);
-    const r = backtest(candles, DEFAULT_STRATEGY_PARAMS, 10000);
-    // With λ=0 the objective reduces to net-of-fees return.
+    // With λ=0 and γ=0 the objective reduces to net-of-fees return.
+    const r = backtest(candles, DEFAULT_STRATEGY_PARAMS, 10000, 0, 0.001, 0);
     expect(r.riskAdjustedReturn).toBeCloseTo(r.totalReturn, 10);
   });
 
   it("still applies the penalty when a caller passes a non-zero λ", () => {
-    const off = backtest(candles, DEFAULT_STRATEGY_PARAMS, 10000, 0, 0.001);
-    const on = backtest(candles, DEFAULT_STRATEGY_PARAMS, 10000, 1.0, 0.001);
+    const off = backtest(candles, DEFAULT_STRATEGY_PARAMS, 10000, 0, 0.001, 0);
+    const on = backtest(candles, DEFAULT_STRATEGY_PARAMS, 10000, 1.0, 0.001, 0);
     if (off.holdCount === 0) return;
     expect(on.riskAdjustedReturn).toBeLessThan(off.riskAdjustedReturn);
     expect(on.totalReturn).toBeCloseTo(off.totalReturn, 10); // λ never touches P&L
@@ -426,6 +427,46 @@ describe("Optimizer hold-regret term", () => {
     // stream, where the term does discriminate; the optimizer's does not.
     expect(OPPORTUNITY_COST_LAMBDA).toBeGreaterThan(0);
     expect(OPTIMIZER_LAMBDA).toBe(0);
+  });
+});
+
+// ─── Drawdown penalty ───────────────────────────────────────────────
+// Position size was previously free: the objective contained no risk term
+// despite its name, so successive re-basing rounds walked maxPositionPct to
+// its 50% clamp ceiling while buying only drawdown.
+describe("Optimizer drawdown penalty", () => {
+  const candles = generateCandles(500, 50000, 300);
+  // DEFAULT_STRATEGY_PARAMS emits no trades on a synthetic random walk, which
+  // leaves maxDrawdown at exactly 0 and makes every risk assertion vacuous.
+  // A lower confidence threshold gets the strategy actually transacting.
+  const trading = { ...DEFAULT_STRATEGY_PARAMS, minConfidence: 0.15 };
+
+  it("is enabled by default", () => {
+    expect(OPTIMIZER_DRAWDOWN_PENALTY).toBeGreaterThan(0);
+  });
+
+  it("subtracts γ × maxDrawdown from the objective", () => {
+    const r = backtest(candles, trading, 10000, 0, 0.001, 2.0);
+    expect(r.riskAdjustedReturn).toBeCloseTo(r.totalReturn - 2.0 * r.maxDrawdown, 10);
+  });
+
+  it("penalises a larger position size more, at identical trade counts", () => {
+    // Position size changes how much each signal stakes, never which signals
+    // fire — so this isolates risk from strategy behaviour.
+    const small = backtest(candles, { ...trading, maxPositionPct: 0.1 }, 10000, 0, 0.001, 1.0);
+    const large = backtest(candles, { ...trading, maxPositionPct: 0.5 }, 10000, 0, 0.001, 1.0);
+    expect(large.totalTrades).toBeGreaterThan(0);
+    expect(large.totalTrades).toBe(small.totalTrades);
+    expect(large.maxDrawdown).toBeGreaterThan(small.maxDrawdown);
+  });
+
+  it("never alters realised P&L, only the score", () => {
+    const a = backtest(candles, trading, 10000, 0, 0.001, 0);
+    const b = backtest(candles, trading, 10000, 0, 0.001, 4.0);
+    expect(a.maxDrawdown).toBeGreaterThan(0);
+    expect(b.totalReturn).toBeCloseTo(a.totalReturn, 10);
+    expect(b.maxDrawdown).toBeCloseTo(a.maxDrawdown, 10);
+    expect(b.riskAdjustedReturn).toBeLessThan(a.riskAdjustedReturn);
   });
 });
 
