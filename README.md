@@ -8,7 +8,7 @@ A professional, full-stack Bitcoin trading intelligence dashboard with real-time
 
 | Feature | Description |
 |---|---|
-| **Live Price Feed** | Real-time BTC/USDT price via Kraken (primary), CoinGecko (secondary), Yahoo Finance (tertiary) |
+| **Live Price Feed** | Real-time BTC/USDT price via OKX (primary), Binance/Kraken (secondary), CoinGecko / Yahoo Finance (fallback) |
 | **Technical Metrics** | RSI, MACD, Bollinger Bands, EMA 12/26, SMA 50/200, Volume Ratio |
 | **Statistical Significance** | Z-score engine classifies each price move as a meaningful **trend** or a noise **blip** |
 | **Change Detection** | CUSUM changepoint alarm, Hurst Exponent regime classifier (trending / random walk / mean-reverting), Wilder ADX trend-strength filter |
@@ -17,6 +17,7 @@ A professional, full-stack Bitcoin trading intelligence dashboard with real-time
 | **Champion-Challenger Learning** | Every heartbeat emits three shadow signals — champion plus two challengers (more aggressive, more conservative). Only champion executes; a one-sided paired t-test on per-period reward decides whether to promote a challenger (requires p < 0.05, n ≥ 30 pairs, positive mean diff). |
 | **Signal Validation** | Tracks predicted vs actual outcomes for all signals including holds; reports win rate, Sharpe, max drawdown, hold regret, and risk-adjusted return |
 | **Paper Trading Simulator** | Starts with $10,000 USD seed, executes signals automatically, tracks portfolio over time |
+| **Pluggable Execution Venue** | Trades route to an in-database paper ledger (default), OKX demo trading, or a live OKX account — selected by `EXECUTION_VENUE`, with misconfiguration always failing back to paper |
 | **Weekly Performance Report** | Returns, trade history, portfolio growth chart, vs BTC buy-and-hold baseline |
 | **AI Analysis Assistant** | On-demand LLM commentary interpreting current metrics, signals, and portfolio state |
 | **Telegram Notifications** | Sends signal rationale, current price, and portfolio value on every buy/sell trigger |
@@ -43,7 +44,9 @@ server/
     technicalAnalysis.ts   ← RSI, MACD, BB, EMA/SMA, Z-score, CUSUM, Hurst, ADX
     signalGenerator.ts     ← 8-layer signal aggregation with Hurst weighting and CUSUM boost
     walkForwardOptimizer.ts← Self-learning parameter optimization
-    marketData.ts          ← Kraken / CoinGecko / Yahoo Finance data layer
+    marketData.ts          ← OKX / Kraken / CoinGecko / Yahoo Finance data layer
+    okxClient.ts           ← OKX v5 REST client (signing, market data, spot orders)
+    executionVenue.ts      ← Paper / OKX-demo / OKX-live execution abstraction
   heartbeatHandler.ts      ← Scheduled signal generation, validation, optimization
   routers.ts               ← All tRPC procedures
   db.ts                    ← Database query helpers

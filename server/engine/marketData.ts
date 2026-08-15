@@ -2,16 +2,30 @@
  * Market Data Service
  *
  * Candle data source priority (geo-restriction aware):
- *   1. Kraken REST API  — no geo-restrictions, reliable OHLCV
- *   2. CoinGecko OHLC   — free tier, 4-hour granularity minimum
- *   3. Yahoo Finance     — via Manus built-in Data API hub
+ *   1. OKX v5 public API — the execution venue; see note below
+ *   2. Kraken REST API   — no geo-restrictions, reliable OHLCV
+ *   3. CoinGecko OHLC    — free tier, 4-hour granularity minimum
+ *   4. Yahoo Finance     — via Manus built-in Data API hub
  *
  * Price / 24h stats source priority:
- *   1. Binance REST API  — fastest, most accurate
- *   2. CoinGecko         — fallback when Binance is geo-blocked (451)
+ *   1. OKX v5 public API
+ *   2. Binance REST API  — fastest, most accurate
+ *   3. Kraken
+ *   4. CoinGecko         — fallback when Binance is geo-blocked (451)
+ *
+ * ── Why OKX is first ──────────────────────────────────────────────────
+ * Signals are generated from these prices and orders are executed on OKX. When
+ * the two differ, the gap shows up as unexplained slippage that no backtest can
+ * predict: the engine decides on a Yahoo BTC-USD print and fills against the
+ * OKX BTC-USDT book. Reading prices from the venue we trade on removes that
+ * basis. The other sources remain as fallbacks so a single OKX outage cannot
+ * stop signal generation.
+ *
+ * OKX endpoints used here are public — no API key, no account needed.
  */
 
 import { callDataApi } from "../_core/dataApi";
+import * as okx from "./okxClient";
 
 const BINANCE_API = "https://api.binance.com/api/v3";
 const KRAKEN_API  = "https://api.kraken.com/0/public";
@@ -63,7 +77,25 @@ export async function fetchCurrentPrice(): Promise<{
   price: number; ts: number; source: string;
   change24h?: number; high24h?: number; low24h?: number; volume24h?: number;
 }> {
-  // 1. Try Binance ticker
+  // 1. OKX — the venue we execute on
+  try {
+    const t = await okx.fetchTicker();
+    const last = parseFloat(t.last);
+    const open = parseFloat(t.open24h);
+    return {
+      price: last,
+      ts: parseInt(t.ts),
+      source: "okx",
+      change24h: open > 0 ? ((last - open) / open) * 100 : undefined,
+      high24h: parseFloat(t.high24h),
+      low24h: parseFloat(t.low24h),
+      volume24h: parseFloat(t.vol24h),
+    };
+  } catch (okxErr) {
+    console.warn("[MarketData] OKX price failed:", okxErr);
+  }
+
+  // 2. Try Binance ticker
   try {
     const res = await fetch(`${BINANCE_API}/ticker/price?symbol=BTCUSDT`);
     if (!res.ok) throw new Error(`Binance ${res.status}`);
@@ -73,7 +105,7 @@ export async function fetchCurrentPrice(): Promise<{
     console.warn("[MarketData] Binance price failed:", binanceErr);
   }
 
-  // 2. Try Kraken ticker
+  // 3. Try Kraken ticker
   try {
     const res = await fetch(`${KRAKEN_API}/Ticker?pair=XBTUSD`);
     if (!res.ok) throw new Error(`Kraken ${res.status}`);
@@ -85,7 +117,7 @@ export async function fetchCurrentPrice(): Promise<{
     console.warn("[MarketData] Kraken price failed:", krakenErr);
   }
 
-  // 3. CoinGecko fallback
+  // 4. CoinGecko fallback
   const res = await fetch(`${COINGECKO_API}/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true`);
   if (!res.ok) throw new Error(`CoinGecko ${res.status}`);
   const data = (await res.json()) as { bitcoin: { usd: number; usd_24h_change: number } };
@@ -103,7 +135,25 @@ export async function fetch24hStats(): Promise<{
   high24h: number; low24h: number; volume24h: number;
   lastPrice: number; source: string;
 }> {
-  // 1. Binance
+  // 1. OKX
+  try {
+    const t = await okx.fetchTicker();
+    const last = parseFloat(t.last);
+    const open = parseFloat(t.open24h);
+    return {
+      priceChange: last - open,
+      priceChangePct: open > 0 ? ((last - open) / open) * 100 : 0,
+      high24h: parseFloat(t.high24h),
+      low24h: parseFloat(t.low24h),
+      volume24h: parseFloat(t.vol24h),
+      lastPrice: last,
+      source: "okx",
+    };
+  } catch (e) {
+    console.warn("[MarketData] OKX 24h stats failed:", e);
+  }
+
+  // 2. Binance
   try {
     const res = await fetch(`${BINANCE_API}/ticker/24hr?symbol=BTCUSDT`);
     if (!res.ok) throw new Error(`Binance ${res.status}`);
@@ -121,7 +171,7 @@ export async function fetch24hStats(): Promise<{
     console.warn("[MarketData] Binance 24h stats failed:", e);
   }
 
-  // 2. Kraken
+  // 3. Kraken
   try {
     const res = await fetch(`${KRAKEN_API}/Ticker?pair=XBTUSD`);
     if (!res.ok) throw new Error(`Kraken ${res.status}`);
@@ -145,7 +195,7 @@ export async function fetch24hStats(): Promise<{
     console.warn("[MarketData] Kraken 24h stats failed:", e);
   }
 
-  // 3. CoinGecko
+  // 4. CoinGecko
   const res = await fetch(
     `${COINGECKO_API}/coins/bitcoin?localization=false&tickers=false&community_data=false&developer_data=false`
   );
@@ -175,35 +225,61 @@ export async function fetch24hStats(): Promise<{
 // ─── Candle Data ──────────────────────────────────────────────────────
 /**
  * Fetch OHLCV candles. Tries sources in order:
- * 1. Kraken  2. CoinGecko OHLC  3. Yahoo Finance (Manus Data API)
+ * 1. OKX  2. Kraken  3. CoinGecko OHLC  4. Yahoo Finance (Manus Data API)
  * Binance is intentionally skipped here because it returns 451 on restricted regions.
  */
 export async function fetchCandles(
   interval: string = "1h",
   limit: number = 500
 ): Promise<BinanceCandle[]> {
-  // 1. Kraken
+  // 1. OKX — same book the orders hit
+  try {
+    return await fetchCandlesFromOkx(interval, limit);
+  } catch (e) {
+    console.warn("[MarketData] OKX candles failed:", e);
+  }
+
+  // 2. Kraken
   try {
     return await fetchCandlesFromKraken(interval, limit);
   } catch (e) {
     console.warn("[MarketData] Kraken klines failed:", e);
   }
 
-  // 2. CoinGecko OHLC
+  // 3. CoinGecko OHLC
   try {
     return await fetchCandlesFromCoinGecko(interval, limit);
   } catch (e) {
     console.warn("[MarketData] CoinGecko OHLC failed:", e);
   }
 
-  // 3. Yahoo Finance via Manus Data API
+  // 4. Yahoo Finance via Manus Data API
   try {
     return await fetchCandlesFromYahoo(interval, limit);
   } catch (e) {
     console.warn("[MarketData] Yahoo Finance klines failed:", e);
   }
 
-  throw new Error("All candle data sources failed (Kraken, CoinGecko, Yahoo Finance).");
+  throw new Error("All candle data sources failed (OKX, Kraken, CoinGecko, Yahoo Finance).");
+}
+
+// ─── OKX Candles ──────────────────────────────────────────────────────
+async function fetchCandlesFromOkx(
+  interval: string,
+  limit: number
+): Promise<BinanceCandle[]> {
+  const intervalMs = toKrakenInterval(interval) * 60 * 1000;
+  const candles = await okx.fetchCandles(interval, limit);
+  if (candles.length === 0) throw new Error("OKX returned no candles");
+  return candles.map((c) => ({
+    openTime: c.openTime,
+    open: c.open,
+    high: c.high,
+    low: c.low,
+    close: c.close,
+    volume: c.volume,
+    closeTime: c.openTime + intervalMs - 1,
+  }));
 }
 
 // ─── Kraken Candles ───────────────────────────────────────────────────
@@ -328,6 +404,25 @@ export async function fetchCandlesFrom(
   startTime: number,
   limit: number = 1000
 ): Promise<BinanceCandle[]> {
+  // OKX history-candles reaches much further back than Kraken's 720-candle cap.
+  try {
+    const intervalMs = toKrakenInterval(interval) * 60 * 1000;
+    const candles = await okx.fetchCandlesFrom(interval, startTime, limit);
+    if (candles.length > 0) {
+      return candles.map((c) => ({
+        openTime: c.openTime,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+        closeTime: c.openTime + intervalMs - 1,
+      }));
+    }
+  } catch (e) {
+    console.warn("[MarketData] OKX fetchCandlesFrom failed:", e);
+  }
+
   // For historical backfill, Kraken supports since= parameter
   try {
     const krakenInterval = toKrakenInterval(interval);
@@ -365,6 +460,13 @@ export async function fetchOrderBook(
   bids: Array<{ price: number; qty: number }>;
   asks: Array<{ price: number; qty: number }>;
 }> {
+  // OKX book first — this is the liquidity the orders actually consume
+  try {
+    return await okx.fetchOrderBook(limit);
+  } catch (e) {
+    console.warn("[MarketData] OKX order book failed:", e);
+  }
+
   // Try Kraken order book (no geo-restriction)
   try {
     const res = await fetch(`${KRAKEN_API}/Depth?pair=XBTUSD&count=${limit}`);
