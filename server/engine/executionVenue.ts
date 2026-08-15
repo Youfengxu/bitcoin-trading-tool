@@ -48,6 +48,31 @@ import {
   convictionScaledFraction,
 } from "../../shared/tradingTypes";
 
+/**
+ * Capital the strategy is allowed to deploy on the OKX book, in SGD. Unset or 0
+ * means "use the whole account".
+ *
+ * Why an allocation rather than the raw balance: demo funds cannot be
+ * withdrawn. OKX seeds every demo account with a fixed basket (1 BTC, 10k USDT,
+ * 10k USD, 10k SGD, 5k USDC, 1 ETH ≈ SGD 93k) and restores it periodically, so
+ * there is no way to trade the account down to a chosen size — sells convert
+ * BTC to USDT and the total stays put.
+ *
+ * With an allocation set, the tool tracks its OWN cash/BTC ledger for the venue
+ * in simulator_state and uses the real balance only as a solvency check. That
+ * also makes the book immune to OKX's periodic resets, which would otherwise
+ * put a meaningless discontinuity in the equity curve.
+ */
+function okxBookCapitalSgd(): number {
+  const v = parseFloat(process.env.OKX_BOOK_CAPITAL_SGD ?? "0");
+  return isNaN(v) || v <= 0 ? 0 : v;
+}
+
+/** True when the OKX book is a tracked allocation rather than the raw account. */
+export function isAllocatedBook(): boolean {
+  return okxBookCapitalSgd() > 0;
+}
+
 /** Candle interval → milliseconds, for measuring the cooldown in bars. */
 const INTERVAL_MS: Record<string, number> = {
   "5m": 300_000, "15m": 900_000, "30m": 1_800_000,
@@ -391,6 +416,51 @@ export function getExecutionVenue(): ExecutionVenue {
  * Never throws: a venue that cannot be reached must not stop the server. It
  * degrades to paper, which is exactly what getRealVenue() already does.
  */
+/**
+ * Creates the allocated OKX book on first use, sized to OKX_BOOK_CAPITAL_SGD and
+ * split to match the paper book's current BTC weight.
+ *
+ * Matching the weight matters: sizing is fractional, so absolute size is
+ * irrelevant to comparing the books, but a different starting ALLOCATION makes
+ * the two curves diverge for reasons that have nothing to do with execution
+ * quality — which is the only thing the comparison is meant to measure.
+ *
+ * Does nothing if the book already exists, so it never overwrites a running one.
+ */
+export async function seedAllocatedBook(venueName: string, btcPrice: number): Promise<void> {
+  const capitalSgd = okxBookCapitalSgd();
+  if (capitalSgd <= 0) return;
+
+  const existing = await db.getSimulatorState(venueName);
+  if (existing) return;
+
+  const rate = await okx.fetchUsdtSgdRate();
+  if (!rate) {
+    console.error(`[ExecutionVenue] cannot seed ${venueName}: USDT-SGD rate unavailable`);
+    return;
+  }
+  const capitalUsdt = capitalSgd / rate;
+
+  // Mirror the paper book's BTC weight so the two start comparable.
+  const paper = await db.getSimulatorState(db.INTERNAL_VENUE);
+  const paperTotal = paper ? paper.cashUsd + paper.btcHolding * btcPrice : 0;
+  const btcWeight = paper && paperTotal > 0 ? (paper.btcHolding * btcPrice) / paperTotal : 0.5;
+
+  const btcHolding = (capitalUsdt * btcWeight) / btcPrice;
+  const cashUsd = capitalUsdt * (1 - btcWeight);
+
+  await db.initSimulatorState(venueName);
+  await db.updateSimulatorState(
+    { cashUsd, btcHolding, totalValueUsd: capitalUsdt, lastPrice: btcPrice },
+    venueName
+  );
+  console.log(
+    `[ExecutionVenue] seeded ${venueName} book with SGD ${capitalSgd.toLocaleString()} ` +
+    `(${capitalUsdt.toFixed(2)} USDT @ ${rate}) — ${cashUsd.toFixed(2)} cash / ` +
+    `${btcHolding.toFixed(8)} BTC, matching the paper book's ${(btcWeight * 100).toFixed(1)}% BTC weight`
+  );
+}
+
 export async function announceExecutionVenue(): Promise<void> {
   const requested = (process.env.EXECUTION_VENUE ?? "internal").toLowerCase();
   const real = getRealVenue();
@@ -416,10 +486,26 @@ export async function announceExecutionVenue(): Promise<void> {
       );
       return;
     }
-    console.log(
-      `[ExecutionVenue] ${real.name} ACTIVE alongside the paper ledger — ` +
-      `holdings ${snap.cashUsd.toFixed(2)} quote / ${snap.btcHolding} base`
-    );
+    if (isAllocatedBook()) {
+      try {
+        const t = await okx.fetchTicker();
+        await seedAllocatedBook(real.name, parseFloat(t.last));
+      } catch (e) {
+        console.error(`[ExecutionVenue] could not seed the allocated book:`, e);
+      }
+      const book = await db.getSimulatorState(real.name);
+      console.log(
+        `[ExecutionVenue] ${real.name} ACTIVE (allocated book) — ` +
+        `${book?.cashUsd.toFixed(2) ?? "?"} cash / ${book?.btcHolding ?? "?"} BTC. ` +
+        `Account holds ${snap.cashUsd.toFixed(2)} quote / ${snap.btcHolding} base; ` +
+        `only the allocation is traded.`
+      );
+    } else {
+      console.log(
+        `[ExecutionVenue] ${real.name} ACTIVE alongside the paper ledger — ` +
+        `holdings ${snap.cashUsd.toFixed(2)} quote / ${snap.btcHolding} base`
+      );
+    }
     if (snap.cashUsd <= 0 && snap.btcHolding <= 0) {
       console.error(
         `[ExecutionVenue] ⚠ ${real.name} holds nothing. Every order will be rejected, and ` +
@@ -559,12 +645,14 @@ async function executeOnVenue(
   if (!state) state = (await db.initSimulatorState(bookName)) ?? null;
   if (!state || !state.isRunning) return null;
 
-  // Size against the venue's own view of the account when it has one, so an OKX
-  // deposit, withdrawal or manual trade is reflected on the next heartbeat.
-  const holdings = (await venue.snapshot()) ?? {
-    cashUsd: state.cashUsd,
-    btcHolding: state.btcHolding,
-  };
+  // An allocated book tracks its own ledger: the venue's raw balance is the
+  // whole OKX account, not the slice the strategy is allowed to deploy. The
+  // paper book is always tracked this way. Otherwise size against the venue's
+  // own view, so a deposit or manual trade shows up on the next heartbeat.
+  const tracked = bookName === db.INTERNAL_VENUE || isAllocatedBook();
+  const holdings = tracked
+    ? { cashUsd: state.cashUsd, btcHolding: state.btcHolding }
+    : (await venue.snapshot()) ?? { cashUsd: state.cashUsd, btcHolding: state.btcHolding };
 
   let fill: Fill | null = null;
   if (action === "buy") {
@@ -576,8 +664,10 @@ async function executeOnVenue(
   }
   if (!fill) return null;
 
-  // Re-read the venue after the fill; fall back to arithmetic if unreachable.
-  const after = (await venue.snapshot()) ?? {
+  // Apply the fill to the tracked ledger. For an allocated book this MUST be
+  // arithmetic — re-reading the venue would replace the allocation with the
+  // whole account balance and silently undo the allocation on the first trade.
+  const arithmetic = {
     cashUsd:
       action === "buy"
         ? holdings.cashUsd - fill.usdValue
@@ -587,6 +677,7 @@ async function executeOnVenue(
         ? holdings.btcHolding + fill.btcAmount
         : holdings.btcHolding - fill.btcAmount,
   };
+  const after = tracked ? arithmetic : (await venue.snapshot()) ?? arithmetic;
 
   const totalValue = after.cashUsd + after.btcHolding * fill.price;
 

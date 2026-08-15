@@ -238,6 +238,23 @@ export interface OkxTicker {
   ts: string;
 }
 
+/**
+ * Live USDT→SGD rate, for reporting a USDT-denominated book in SGD.
+ *
+ * OKX lists no BTC-SGD market — SGD only pairs with stablecoins (USDT-SGD,
+ * USDC-SGD, USDG-SGD) while BTC quotes against USDT/USD/USDC/EUR and others. So
+ * SGD can be a display currency but never the cash leg the strategy holds.
+ */
+export async function fetchUsdtSgdRate(): Promise<number | null> {
+  try {
+    const data = await publicGet<OkxTicker>("/api/v5/market/ticker?instId=USDT-SGD");
+    const rate = parseFloat(data[0]?.last ?? "");
+    return isNaN(rate) || rate <= 0 ? null : rate;
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchTicker(instId = getInstId()): Promise<OkxTicker> {
   const data = await publicGet<OkxTicker>(`/api/v5/market/ticker?instId=${instId}`);
   const t = data[0];

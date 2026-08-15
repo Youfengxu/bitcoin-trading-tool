@@ -33,6 +33,7 @@ import {
 import { fetchExternalSignals } from "./heartbeatHandler";
 import { applyExternalModifiers } from "./engine/externalModifiers";
 import { executeSignalTrade, getRealVenue } from "./engine/executionVenue";
+import { fetchUsdtSgdRate } from "./engine/okxClient";
 import * as db from "./db";
 
 export const appRouter = router({
@@ -207,6 +208,15 @@ export const appRouter = router({
   // `venues` lists the books that exist, for a UI selector.
   simulator: router({
     venues: publicProcedure.query(async () => db.listSimulatorVenues()),
+    /**
+     * Live USDT→SGD rate for displaying a USDT-denominated book in SGD.
+     * Null when unavailable — the UI then falls back to USD rather than
+     * silently showing USD figures labelled SGD.
+     */
+    sgdRate: publicProcedure.query(async () => ({
+      rate: await fetchUsdtSgdRate(),
+      fetchedAt: Date.now(),
+    })),
     /**
      * What the execution layer actually resolved to, not merely what was
      * requested. `active` false with a non-internal `requested` means the venue

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -6,8 +7,26 @@ import { Loader2, Play, Pause, RotateCcw, Wallet, ArrowUpCircle, ArrowDownCircle
 import { toast } from "sonner";
 
 export default function Simulator() {
-  const { data: state, isLoading, refetch } = trpc.simulator.state.useQuery(undefined, { refetchInterval: 15000 });
-  const { data: trades, refetch: refetchTrades } = trpc.simulator.trades.useQuery({ limit: 50 }, { refetchInterval: 30000 });
+  // Which book to show. `internal` is the paper ledger; `okx-demo` / `okx-live`
+  // are the real venues. Books only appear once they exist.
+  const [venue, setVenue] = useState("internal");
+  const [inSgd, setInSgd] = useState(false);
+
+  const { data: venues } = trpc.simulator.venues.useQuery(undefined, { refetchInterval: 60000 });
+  const { data: venueStatus } = trpc.simulator.venueStatus.useQuery(undefined, { refetchInterval: 30000 });
+  const { data: sgd } = trpc.simulator.sgdRate.useQuery(undefined, { refetchInterval: 300000 });
+
+  const { data: state, isLoading, refetch } = trpc.simulator.state.useQuery({ venue }, { refetchInterval: 15000 });
+  const { data: trades, refetch: refetchTrades } = trpc.simulator.trades.useQuery({ limit: 50, venue }, { refetchInterval: 30000 });
+
+  // Display conversion. Falls back to USD when the rate is unavailable rather
+  // than showing USD figures labelled SGD.
+  const rate = sgd?.rate ?? null;
+  const showSgd = inSgd && rate !== null;
+  const cur = (n: number | null | undefined) =>
+    n == null ? "—"
+      : (showSgd ? n * (rate as number) : n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const sym = showSgd ? "S$" : "$";
   const toggleMutation = trpc.simulator.toggleRunning.useMutation({
     onSuccess: (data) => {
       toast.success(data.isRunning ? "Simulator started" : "Simulator paused");
@@ -34,12 +53,34 @@ export default function Simulator() {
             SIMULATOR
           </h1>
           <p className="text-muted-foreground text-sm mt-1 font-mono-tech">
-            Binance paper trading &middot; $10,000 seed
+            {venue === "internal" ? "Paper ledger \u00b7 analysis baseline" : `${venue} \u00b7 real orders`}
+            {venueStatus && venueStatus.requested !== venueStatus.active && (
+              <span className="text-destructive"> &middot; {venueStatus.requested} did not take effect</span>
+            )}
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 items-center">
+          <select
+            value={venue}
+            onChange={(e) => setVenue(e.target.value)}
+            className="bg-background border border-border rounded px-2 py-1.5 text-xs font-mono-tech"
+            aria-label="Book"
+          >
+            {(venues ?? ["internal"]).map((v: string) => (
+              <option key={v} value={v}>{v}</option>
+            ))}
+          </select>
           <Button
-            onClick={() => toggleMutation.mutate()}
+            onClick={() => setInSgd((v) => !v)}
+            variant="outline"
+            disabled={rate === null}
+            title={rate === null ? "USDT-SGD rate unavailable" : `1 USDT = ${rate} SGD`}
+            className="font-mono-tech text-xs"
+          >
+            {showSgd ? "SGD" : "USD"}
+          </Button>
+          <Button
+            onClick={() => toggleMutation.mutate({ venue })}
             disabled={toggleMutation.isPending}
             className={`font-mono-tech text-xs ${state?.isRunning ? "bg-[oklch(0.82_0.18_85)] hover:bg-[oklch(0.82_0.18_85)]/80" : "bg-[oklch(0.82_0.22_145)] hover:bg-[oklch(0.82_0.22_145)]/80"}`}
           >
@@ -47,7 +88,7 @@ export default function Simulator() {
             {state?.isRunning ? "Pause" : "Start"}
           </Button>
           <Button
-            onClick={() => resetMutation.mutate()}
+            onClick={() => resetMutation.mutate({ venue })}
             disabled={resetMutation.isPending}
             variant="outline"
             className="font-mono-tech text-xs text-destructive border-destructive/30 hover:bg-destructive/10"
@@ -74,7 +115,7 @@ export default function Simulator() {
             </CardHeader>
             <CardContent>
               <div className="font-hud text-3xl font-bold neon-glow-pink text-primary">
-                ${state?.totalValueUsd?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                {sym}{cur(state?.totalValueUsd)}
               </div>
               <div className={`font-mono-tech text-sm mt-1 ${totalReturn >= 0 ? "text-[oklch(0.82_0.22_145)]" : "text-destructive"}`}>
                 {totalReturn >= 0 ? "+" : ""}{totalReturn.toFixed(2)}% from seed
@@ -85,12 +126,12 @@ export default function Simulator() {
           <Card className="hud-panel border-border">
             <CardHeader className="pb-2">
               <CardTitle className="text-xs font-mono-tech text-muted-foreground uppercase tracking-wider">
-                Cash (USD)
+                Cash ({showSgd ? "SGD" : "USD"})
               </CardTitle>
             </CardHeader>
             <CardContent>
               <div className="font-hud text-xl text-[oklch(0.82_0.22_145)]">
-                ${state?.cashUsd?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                {sym}{cur(state?.cashUsd)}
               </div>
             </CardContent>
           </Card>
@@ -107,7 +148,7 @@ export default function Simulator() {
               </div>
               {state?.lastPrice && (
                 <div className="text-xs font-mono-tech text-muted-foreground mt-1">
-                  ≈ ${((state.btcHolding ?? 0) * state.lastPrice).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                  ≈ {sym}{cur((state.btcHolding ?? 0) * state.lastPrice)}
                 </div>
               )}
             </CardContent>
