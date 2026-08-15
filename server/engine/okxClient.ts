@@ -110,6 +110,11 @@ export const AUTH_HINTS: Record<string, string> = {
   "50113": "signature mismatch — usually a wrong secret key, or whitespace pasted into the value",
   "50114": "invalid authorization — the key lacks the required permission (Read is the minimum)",
   "50110": "your IP is not on the key's allowlist",
+  "50119":
+    "the API key does not exist on this site+environment. The key string is " +
+    "well-formed but OKX has no record of it here — it was created on a " +
+    "different regional site, created in the other environment (demo keys and " +
+    "live keys are separate), deleted since, or only partially pasted",
 };
 
 // ─── Request plumbing ─────────────────────────────────────────────────

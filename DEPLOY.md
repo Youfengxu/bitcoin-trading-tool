@@ -125,8 +125,11 @@ Three things that need more than a `git push`:
   `drizzle/`. `db:push` is `drizzle-kit migrate`; it only applies migrations
   that already exist.
 - **New script under `server/`** — the `app` image contains only `dist/`, so run
-  it through the `tools` profile:
-  `docker compose run --rm tools pnpm tsx server/scripts/<name>.ts`
+  it through the `tools` profile. **Rebuild first**: `docker compose run` reuses
+  a cached image and will silently execute stale code after a `git pull`.
+  ```bash
+  docker compose build tools && docker compose run --rm tools pnpm tsx server/scripts/<name>.ts
+  ```
 
 ## Operations
 
