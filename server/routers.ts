@@ -32,7 +32,7 @@ import {
 } from "../shared/tradingTypes";
 import { fetchExternalSignals } from "./heartbeatHandler";
 import { applyExternalModifiers } from "./engine/externalModifiers";
-import { executeSignalTrade, getExecutionVenue } from "./engine/executionVenue";
+import { executeSignalTrade, getRealVenue } from "./engine/executionVenue";
 import * as db from "./db";
 
 export const appRouter = router({
@@ -207,6 +207,31 @@ export const appRouter = router({
   // `venues` lists the books that exist, for a UI selector.
   simulator: router({
     venues: publicProcedure.query(async () => db.listSimulatorVenues()),
+    /**
+     * What the execution layer actually resolved to, not merely what was
+     * requested. `active` false with a non-internal `requested` means the venue
+     * fell back to paper — the case worth catching before a signal fires.
+     */
+    venueStatus: publicProcedure.query(async () => {
+      const requested = (process.env.EXECUTION_VENUE ?? "internal").toLowerCase();
+      const real = getRealVenue();
+      if (!real) {
+        return {
+          requested,
+          active: "internal",
+          isLive: false,
+          tookEffect: requested === "internal",
+          holdings: null as null | { cashUsd: number; btcHolding: number },
+        };
+      }
+      return {
+        requested,
+        active: real.name,
+        isLive: real.isLive,
+        tookEffect: true,
+        holdings: await real.snapshot(),
+      };
+    }),
     state: publicProcedure
       .input(z.object({ venue: z.string().default(db.INTERNAL_VENUE) }).optional())
       .query(async ({ input }) => {

@@ -366,6 +366,60 @@ export function getExecutionVenue(): ExecutionVenue {
   return cached;
 }
 
+/**
+ * Resolves the configured venue at startup and reports what it decided.
+ *
+ * Venue resolution is otherwise lazy — first triggered inside
+ * executeSignalTrade — so a misconfiguration stays invisible until a signal
+ * finally confirms, which can be many hours after the deploy that caused it.
+ * That is the worst possible time to discover the venue quietly fell back to
+ * paper. Calling this at boot turns a silent 3am surprise into a log line at
+ * the moment of the change, and the credential probe means "enabled" reflects
+ * a real authenticated round trip rather than merely well-formed config.
+ *
+ * Never throws: a venue that cannot be reached must not stop the server. It
+ * degrades to paper, which is exactly what getRealVenue() already does.
+ */
+export async function announceExecutionVenue(): Promise<void> {
+  const requested = (process.env.EXECUTION_VENUE ?? "internal").toLowerCase();
+  const real = getRealVenue();
+
+  if (!real) {
+    if (requested === "internal") {
+      console.log("[ExecutionVenue] Paper ledger only (EXECUTION_VENUE=internal).");
+    } else {
+      console.error(
+        `[ExecutionVenue] ⚠ EXECUTION_VENUE=${requested} did NOT take — running paper-only. ` +
+        `See the error above for why.`
+      );
+    }
+    return;
+  }
+
+  try {
+    const snap = await real.snapshot();
+    if (!snap) {
+      console.error(
+        `[ExecutionVenue] ⚠ ${real.name} is configured but its balance could not be read. ` +
+        `Orders will fail and, in lockstep, the paper book will skip those trades too.`
+      );
+      return;
+    }
+    console.log(
+      `[ExecutionVenue] ${real.name} ACTIVE alongside the paper ledger — ` +
+      `holdings ${snap.cashUsd.toFixed(2)} quote / ${snap.btcHolding} base`
+    );
+    if (snap.cashUsd <= 0 && snap.btcHolding <= 0) {
+      console.error(
+        `[ExecutionVenue] ⚠ ${real.name} holds nothing. Every order will be rejected, and ` +
+        `lockstep means the paper book stops trading too. Fund the account.`
+      );
+    }
+  } catch (e) {
+    console.error(`[ExecutionVenue] ⚠ ${real.name} health check failed:`, e);
+  }
+}
+
 /** Test seam — clears the memoized venues so env changes take effect. */
 export function resetExecutionVenue(): void {
   cached = null;

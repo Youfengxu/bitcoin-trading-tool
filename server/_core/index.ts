@@ -8,6 +8,7 @@ import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
+import { announceExecutionVenue } from "../engine/executionVenue";
 import { handleHeartbeat } from "../heartbeatHandler";
 
 function isPortAvailable(port: number): Promise<boolean> {
@@ -73,6 +74,11 @@ async function startServer() {
   server.listen(port, () => {
     console.log(`Server running on http://localhost:${port}/`);
   });
+
+  // Report which execution venue is live before the first heartbeat, so a
+  // misconfigured venue surfaces at deploy time rather than hours later when a
+  // signal finally confirms. Never throws — degrades to the paper ledger.
+  await announceExecutionVenue();
 
   startInternalScheduler();
 }
