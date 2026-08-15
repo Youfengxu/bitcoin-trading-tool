@@ -71,6 +71,12 @@ const ADX_TREND = parseFloat(arg("adx") ?? "25");
 const SEED = 10000;
 const HISTORY_START = Date.parse("2026-02-15T00:00:00Z");
 const LIVE_START = Date.parse("2026-05-15T00:00:00Z");
+/**
+ * Fixed end of the scored window. Using Date.now() made every run measure a
+ * slightly different period, so two variants could not be compared — an
+ * ablation would show a difference that was partly just elapsed time.
+ */
+const WINDOW_END = Date.parse("2026-08-16T00:00:00Z");
 const MIN_BARS = 1500;
 const ANCHOR = "BTC-USDT";
 const PEG_RANGE_PCT = 0.05;
@@ -230,7 +236,7 @@ async function main() {
   const report: Record<string, Result[]> = {};
   for (const [label, ws, we] of [
     ["HELD-OUT (Mar–May, bull)", HISTORY_START, LIVE_START],
-    ["LIVE (May–Aug, bear)", LIVE_START, Date.now()],
+    ["LIVE (May–Aug, bear)", LIVE_START, WINDOW_END],
   ] as Array<[string, number, number]>) {
     console.log(`\n${label}`);
     console.log("─".repeat(100));

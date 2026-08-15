@@ -43,6 +43,12 @@ const SEED = 10000;
 const HISTORY_START = Date.parse("2026-02-15T00:00:00Z");
 /** Split between the held-out (earlier) window and the live window. */
 const LIVE_START = Date.parse("2026-05-15T00:00:00Z");
+/**
+ * Fixed end of the scored window. Using Date.now() made every run measure a
+ * slightly different period, so two variants could not be compared — an
+ * ablation would show a difference that was partly just elapsed time.
+ */
+const WINDOW_END = Date.parse("2026-08-16T00:00:00Z");
 const MIN_BARS = 1500;
 /** Always included: the asset every parameter was tuned on. */
 const ANCHOR = "BTC-USDT";
@@ -222,7 +228,7 @@ async function main() {
 
   for (const [label, winStart, winEnd] of [
     ["HELD-OUT WINDOW (Mar–May)", HISTORY_START, LIVE_START],
-    ["LIVE WINDOW (May–Aug, the deployed period)", LIVE_START, Date.now()],
+    ["LIVE WINDOW (May–Aug, the deployed period)", LIVE_START, WINDOW_END],
   ] as Array<[string, number, number]>) {
     console.log(`\n${label}`);
     console.log("─".repeat(104));
