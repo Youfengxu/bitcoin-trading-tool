@@ -43,7 +43,7 @@ import * as db from "../db";
 import * as okx from "./okxClient";
 import type { StrategyParameters } from "../../shared/tradingTypes";
 import {
-  TRADE_COOLDOWN_BARS,
+  tradeCooldownBars,
   MIN_TRADE_NOTIONAL_USD,
   convictionScaledFraction,
 } from "../../shared/tradingTypes";
@@ -558,14 +558,15 @@ export async function executeSignalTrade(opts: {
   // books. The paper ledger is the canonical strategy state; letting each book
   // gate itself would let them diverge on cooldown or size and break lockstep.
   const intervalMs = INTERVAL_MS[opts.candleInterval ?? "1h"] ?? 3600_000;
-  const [lastTrade] = await db.getRecentTrades(1, db.INTERNAL_VENUE);
+  const cooldownBars = tradeCooldownBars();
+  const [lastTrade] = cooldownBars > 0 ? await db.getRecentTrades(1, db.INTERNAL_VENUE) : [];
   if (lastTrade) {
     const barsSince = (ts - lastTrade.ts) / intervalMs;
-    if (barsSince < TRADE_COOLDOWN_BARS) {
-      const wait = (TRADE_COOLDOWN_BARS - barsSince).toFixed(1);
+    if (barsSince < cooldownBars) {
+      const wait = (cooldownBars - barsSince).toFixed(1);
       console.log(
         `[ExecutionVenue] ${action.toUpperCase()} skipped — cooldown ` +
-        `(${barsSince.toFixed(1)}/${TRADE_COOLDOWN_BARS} bars, ${wait} to go)`
+        `(${barsSince.toFixed(1)}/${cooldownBars} bars, ${wait} to go)`
       );
       return { paper: null, real: null, skipped: "cooldown" };
     }

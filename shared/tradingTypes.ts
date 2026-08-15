@@ -159,10 +159,38 @@ export const OPTIMIZER_DRAWDOWN_PENALTY = 0.5;
  */
 
 /**
- * Minimum bars between executed trades. At the 1h candle interval this is a
- * 12-hour cooldown. Measured against the last recorded trade rather than an
- * in-memory counter, so it survives restarts and redeploys.
+ * Minimum bars between executed trades, overridable with TRADE_COOLDOWN_BARS so
+ * it can be tuned without a deploy. Measured against the last RECORDED trade
+ * rather than an in-memory counter, so it survives restarts.
+ *
+ * Default 12 (a 12-hour cooldown at the 1h interval) is retained for
+ * compatibility, but the evidence says **0 is better at minConfidence 0.45**.
+ * Sweeping the cooldown with the threshold held at 0.45:
+ *
+ *   cooldown   trades/qtr  return      trades/qtr  return
+ *              (bear)      (bear)      (bull)      (bull)
+ *      0          62       +1.51%        212       +6.81%
+ *      4          33       +0.09%        101       +6.24%
+ *     12          22       -0.20%         66       +6.17%
+ *     24          16       -0.23%         51       +6.81%
+ *
+ * Shorter is both more frequent AND slightly better in both regimes. The 12-bar
+ * value came from the OPT5 backtest, where it was validated at minConfidence
+ * 0.30 — signals fired constantly then and throttling genuinely helped. At 0.45
+ * the threshold already does the filtering and the cooldown only removes good
+ * trades. The two rules were combined without isolating this one at the higher
+ * threshold.
+ *
+ * Note the asymmetry: frequency is nearly free from the cooldown, and expensive
+ * from the threshold. Dropping minConfidence 0.45 -> 0.40 costs 5-7pp in a bear
+ * window at every cooldown setting.
  */
+export function tradeCooldownBars(): number {
+  const v = parseFloat(process.env.TRADE_COOLDOWN_BARS ?? "12");
+  return isNaN(v) || v < 0 ? 12 : v;
+}
+
+/** @deprecated Use tradeCooldownBars(); kept so existing imports still resolve. */
 export const TRADE_COOLDOWN_BARS = 12;
 
 /**
