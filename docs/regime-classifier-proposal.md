@@ -1,8 +1,69 @@
 # Regime Classifier — Proposal
 
-**Status:** Tier 1 COMPLETE — all three methods failed · Tier 2 pending data
+**Status:** Tier 1 COMPLETE — all three methods failed · GMM closed entirely · Tier 2 pending data
 **Date:** 2026-08-16 · **Outcome recorded:** 2026-08-16
 **Prerequisite for Tier 2:** positioning collector running since 2026-08-16
+
+---
+
+## 0b. Follow-up — why the data diverged from the literature, and what survived
+
+Asked why published HMM/BOCPD results succeed where ours failed, the honest test
+was to measure it rather than argue it. The GMM clusters were scored on what
+they separate:
+
+| separates | out-of-sample, in units of that variable's own sd |
+|---|---|
+| forward 168h **volatility** | **1.04 sd** |
+| forward 168h **return** | 0.33 sd |
+
+**The regimes are real; they are volatility states, not directional ones.** The
+literature's "bull/bear/calm" labels are largely volatility-defined, and calm vs
+turbulent is genuinely forecastable — that is why GARCH works. Direction is not.
+Every method in section 0 applied a working volatility detector to an
+unforecastable directional question. The papers are not wrong; the application
+was.
+
+Secondary gaps, in rough order of size: published regime charts often use the
+**smoothed** posterior (whole-sequence, unusable live) where we used forward
+filtering only; our effective sample is **~2 regime episodes**, not 31,206 bars;
+and "best one-step-ahead forecast among competing models" is a far weaker claim
+than "profitable after 10bps through a binary switch."
+
+### Then the obvious follow-through — and it closed the GMM too
+
+If volatility is what separates, size positions by volatility rather than betting
+on direction (`volTargetBacktest.ts`, `volForecastCompare.ts`). Two results:
+
+**1. The GMM is beaten by a 20-line trailing average — at its own game.**
+
+| volatility predictor | correlation with realized forward vol | mean return | mean maxDD |
+|---|---|---|---|
+| trailing 168h realized vol | **0.619** | −3.24% | **31.4%** |
+| GMM cluster forward vol | 0.488 | −10.44% | 39.9% |
+| no scaling (flat hold) | — | −2.30% | 42.3% |
+
+The GMM quantises a continuous quantity into four buckets whose scalers span only
+0.62–1.03, discarding information a trailing mean keeps. **The GMM line is now
+closed on both axes** — it predicts direction no better than chance and volatility
+worse than an average. Nothing in the cluster machinery earns its complexity.
+
+**2. Volatility targeting itself works, but only as drawdown control.**
+Trailing-vol scaling cut mean drawdown **42.3% → 31.4%** and reduced it in
+**7 of 7 assets**, for ~1pp of return. It is the first result in this project
+that is *consistent across both regime windows* — precisely because it is not a
+directional bet.
+
+**Methodological correction to section 5:** Sharpe was a badly chosen criterion
+here. With a negative mean return, reducing volatility makes Sharpe *more*
+negative, so it penalises exactly the risk reduction it was meant to detect. The
+drawdown result stands on its own; the Sharpe reading should be disregarded, and
+this is a defect in the pre-registration rather than a reason to discount it.
+
+**No deployment follows.** The engine already reaches 14–23% drawdown at 41–45%
+exposure — better than vol-targeted hold's 31%. Layering vol targeting on the
+engine bought only −0.7pp and −1.4pp, because the two are substitutes: both are
+drawdown tools, and the engine is the stronger one. The strategy stays as it is.
 
 ---
 
