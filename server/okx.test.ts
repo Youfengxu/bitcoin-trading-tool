@@ -431,12 +431,13 @@ describe("reconstructEquity / maxDrawdown", () => {
     expect(maxDrawdown(curve)).toBeCloseTo(0.3, 10);
   });
 
-  it("handles a book that has never traded", () => {
+  it("reconstructs the full history of a book that has never traded", () => {
+    // Holdings cannot have changed without a trade, so the current cash/BTC are
+    // also the historical cash/BTC and every price point is recoverable.
     const curve = reconstructEquity([], prices([50000, 60000]), {
       cashUsd: 4000, btcHolding: 0.06, price: 60000, ts: HOUR,
     });
-    expect(curve).toHaveLength(1);
-    expect(curve[0].value).toBeCloseTo(7600, 10);
+    expect(curve.map((p) => p.value)).toEqual([7000, 7600]);
     expect(maxDrawdown(curve)).toBe(0);
   });
 
@@ -449,5 +450,22 @@ describe("reconstructEquity / maxDrawdown", () => {
   it("reports no drawdown for a monotonically rising book", () => {
     const trades: TradePoint[] = [{ ts: 0, cashAfter: 0, btcAfter: 1 }];
     expect(maxDrawdown(reconstructEquity(trades, prices([100, 200, 300])))).toBe(0);
+  });
+});
+
+describe("equity curve for a book that has never traded", () => {
+  const HOUR = 3600_000;
+  it("values the whole price series from current holdings, not just one point", () => {
+    // The normal case for a freshly seeded book and for static between
+    // rebalances. Returning one point would make it look unmeasurable.
+    const curve = reconstructEquity([], [
+      { ts: 0, price: 50000 }, { ts: HOUR, price: 25000 }, { ts: 2 * HOUR, price: 40000 },
+    ], { cashUsd: 5000, btcHolding: 0.1, price: 40000, ts: 2 * HOUR });
+    expect(curve.map((p) => p.value)).toEqual([10000, 7500, 9000]);
+    expect(maxDrawdown(curve)).toBeCloseTo(0.25, 10);
+  });
+
+  it("still returns nothing when there is neither a trade nor a current mark", () => {
+    expect(reconstructEquity([], [{ ts: 0, price: 50000 }])).toHaveLength(0);
   });
 });

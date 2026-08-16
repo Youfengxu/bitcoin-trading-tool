@@ -36,9 +36,30 @@ import {
 import { reconstructEquity, maxDrawdown } from "./engine/equityCurve";
 import { fetchExternalSignals } from "./heartbeatHandler";
 import { applyExternalModifiers } from "./engine/externalModifiers";
-import { executeSignalTrade, getRealVenue } from "./engine/executionVenue";
+import { executeSignalTrade, getRealVenue, SHADOW_VENUE } from "./engine/executionVenue";
 import { fetchUsdtSgdRate } from "./engine/okxClient";
 import * as db from "./db";
+
+/**
+ * The BTC price at which a book of `cash` and `btc` would sit at `weight`.
+ *
+ * From w = (btc*p) / (cash + btc*p), solving for p gives
+ *   p = w*cash / (btc * (1 - w))
+ *
+ * This turns "rebalance when drift exceeds the band" into the two concrete
+ * prices a holder can actually watch for, which is the practically useful number
+ * for a book that trades roughly once a quarter — its return between rebalances
+ * tells you nothing about when it will next act.
+ *
+ * Returns null where the answer is undefined rather than a misleading number:
+ * with no BTC no price produces a positive weight, and w >= 1 is unreachable
+ * while any cash remains.
+ */
+function priceAtWeight(cash: number, btc: number, weight: number): number | null {
+  if (btc <= 0 || weight <= 0 || weight >= 1) return null;
+  const p = (weight * cash) / (btc * (1 - weight));
+  return Number.isFinite(p) && p > 0 ? p : null;
+}
 
 export const appRouter = router({
   system: systemRouter,
@@ -316,6 +337,100 @@ export const appRouter = router({
     validation: publicProcedure
       .input(z.object({ limit: z.number().default(20) }).optional())
       .query(async ({ input }) => db.getValidationHistory(input?.limit ?? 20)),
+    /**
+     * Head-to-head of every book plus a buy-and-hold benchmark, measured from a
+     * COMMON start so the comparison is apples-to-apples.
+     *
+     * The lifetime return of the internal book is not a measurement of either
+     * strategy: it ran the engine until the switch and static after, so its
+     * curve splices two strategies together. Anchoring at the moment the shadow
+     * book was created — which IS the moment of the switch — makes every book
+     * comparable from a point where they all held the same thing.
+     *
+     * The buy-and-hold column exists because it is the benchmark that actually
+     * matters. Across 12 majors over 3 years, holding beat the static allocation
+     * in 5 and lost to it in 7; whether this book is worth running at all is a
+     * question about that column, not about static-versus-engine.
+     */
+    comparison: publicProcedure.query(async () => {
+      const venues = await db.listSimulatorVenues();
+      const states = await Promise.all(venues.map(async (v) => ({ venue: v, state: await db.getSimulatorState(v) })));
+
+      // The shadow book was created at the moment of the switch, so its
+      // createdAt is the anchor. Falling back to the newest book keeps the
+      // endpoint meaningful if the shadow is ever absent.
+      const shadow = states.find((s) => s.venue === SHADOW_VENUE)?.state;
+      const anchorDate = shadow?.createdAt
+        ?? states.map((s) => s.state?.createdAt).filter(Boolean).sort((a, b) => +b! - +a!)[0];
+      const since = anchorDate ? +new Date(anchorDate) : Date.now() - 7 * 86400_000;
+
+      const allPrices = (await db.getRecentMetrics(5000)).map((m) => ({ ts: m.ts, price: m.price }));
+      const prices = allPrices.filter((p) => p.ts >= since).sort((a, b) => a.ts - b.ts);
+
+      const books = await Promise.all(
+        states.filter((s) => s.state).map(async ({ venue, state }) => {
+          const trades = await db.getRecentTrades(1000, venue);
+          const price = state!.lastPrice ?? prices[prices.length - 1]?.price ?? 0;
+          const curve = reconstructEquity(
+            trades.map((t) => ({ ts: t.ts, cashAfter: t.cashAfter, btcAfter: t.btcAfter })),
+            prices,
+            { cashUsd: state!.cashUsd, btcHolding: state!.btcHolding, price, ts: Date.now() },
+          ).filter((pt) => pt.ts >= since);
+
+          const first = curve[0]?.value ?? state!.totalValueUsd;
+          const last = curve[curve.length - 1]?.value ?? state!.totalValueUsd;
+          const total = state!.cashUsd + state!.btcHolding * price;
+          return {
+            venue,
+            strategy: venue === SHADOW_VENUE ? "engine" : strategyMode(),
+            isPaper: venue !== "okx-demo" && venue !== "okx-live",
+            valueNow: total,
+            cashUsd: state!.cashUsd,
+            btcHolding: state!.btcHolding,
+            btcWeight: total > 0 ? (state!.btcHolding * price) / total : 0,
+            returnSince: first > 0 ? (last / first - 1) * 100 : 0,
+            maxDrawdownSince: maxDrawdown(curve) * 100,
+            tradesSince: trades.filter((t) => t.ts >= since).length,
+            tradesLifetime: trades.length,
+            points: curve.length,
+            curve: curve.map((pt) => ({ ts: pt.ts, pct: first > 0 ? (pt.value / first - 1) * 100 : 0 })),
+          };
+        }),
+      );
+
+      // Buy and hold over the identical window.
+      const p0 = prices[0]?.price ?? 0;
+      const pN = prices[prices.length - 1]?.price ?? p0;
+      const holdCurve = prices.map((pt) => ({ ts: pt.ts, value: pt.price }));
+      const benchmark = {
+        venue: "buy & hold",
+        strategy: "hold",
+        returnSince: p0 > 0 ? (pN / p0 - 1) * 100 : 0,
+        maxDrawdownSince: maxDrawdown(holdCurve) * 100,
+        curve: prices.map((pt) => ({ ts: pt.ts, pct: p0 > 0 ? (pt.price / p0 - 1) * 100 : 0 })),
+      };
+
+      // Live rebalance status: the practically useful daily number for a static
+      // book is not its return, it is how far it is from its next trade.
+      const target = staticTargetWeight();
+      const band = staticRebalanceBand();
+      const live = books.find((b) => b.venue === db.INTERNAL_VENUE) ?? books[0];
+      const px = pN || 1;
+      const allocation = live
+        ? {
+            target: target * 100,
+            band: band * 100,
+            current: live.btcWeight * 100,
+            driftPp: Math.abs(live.btcWeight - target) * 100,
+            /** Prices at which the band is next breached, holding cash/BTC fixed. */
+            sellAbovePrice: priceAtWeight(live.cashUsd, live.btcHolding, target + band),
+            buyBelowPrice: priceAtWeight(live.cashUsd, live.btcHolding, target - band),
+          }
+        : null;
+
+      return { since, mode: strategyMode(), books, benchmark, allocation };
+    }),
+
     summary: publicProcedure
       .input(z.object({ venue: z.string().default(db.INTERNAL_VENUE) }).optional())
       .query(async ({ input }) => {

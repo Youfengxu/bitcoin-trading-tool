@@ -22,6 +22,32 @@ export default function Performance() {
   const { data: weekly } = trpc.performance.weekly.useQuery({ limit: 52 }, { refetchInterval: 60000 });
   const { data: validation } = trpc.performance.validation.useQuery({ limit: 20 }, { refetchInterval: 60000 });
   const { data: trades } = trpc.simulator.trades.useQuery({ limit: 200, venue }, { refetchInterval: 60000 });
+  const { data: cmp } = trpc.performance.comparison.useQuery(undefined, { refetchInterval: 60000 });
+
+  // Merge every book's curve plus the benchmark onto a shared time axis so they
+  // can be read against each other. Each series is already normalised to % from
+  // the common anchor, which is what makes books of different sizes comparable.
+  const curveData = useMemo(() => {
+    if (!cmp) return [];
+    const byTs = new Map<number, Record<string, number | string>>();
+    const put = (name: string, pts: Array<{ ts: number; pct: number }>) => {
+      for (const p of pts) {
+        const row = byTs.get(p.ts) ?? { ts: p.ts, time: new Date(p.ts).toLocaleDateString() };
+        row[name] = Number(p.pct.toFixed(2));
+        byTs.set(p.ts, row);
+      }
+    };
+    for (const b of cmp.books) put(b.venue, b.curve);
+    put("buy & hold", cmp.benchmark.curve);
+    return Array.from(byTs.values()).sort((a, b) => (a.ts as number) - (b.ts as number));
+  }, [cmp]);
+
+  const SERIES_COLOR: Record<string, string> = {
+    "internal": "oklch(0.82 0.18 195)",
+    "okx-demo": "oklch(0.72 0.25 350)",
+    "shadow-engine": "oklch(0.85 0.20 85)",
+    "buy & hold": "oklch(0.65 0.02 260)",
+  };
 
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const analyzeMutation = trpc.ai.analyze.useMutation({
@@ -124,6 +150,132 @@ export default function Performance() {
             </div>
           )}
         </div>
+      )}
+
+      {/* ── Head to head ──────────────────────────────────────────────
+          The question this setup exists to answer is whether the static
+          allocation beats the engine, and whether either beats doing nothing.
+          Answering it needs all books on ONE screen from a COMMON start —
+          switching venues to compare makes the reader hold numbers in their
+          head, and lifetime returns are not comparable across books that began
+          at different times under different strategies. */}
+      {cmp && cmp.books.length > 0 && (
+        <Card className="hud-panel border-border">
+          <CardHeader className="pb-2">
+            <CardTitle className="font-hud text-sm tracking-wider">
+              HEAD TO HEAD &middot; since {new Date(cmp.since).toLocaleDateString()}
+            </CardTitle>
+            <p className="text-xs text-muted-foreground font-mono-tech">
+              All books normalised from the strategy switch. Buy &amp; hold is the benchmark
+              that decides whether running any of this beats doing nothing.
+            </p>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs font-mono-tech">
+                <thead className="text-muted-foreground">
+                  <tr className="border-b border-border">
+                    <th className="text-left py-1.5">book</th>
+                    <th className="text-left">strategy</th>
+                    <th className="text-right">return</th>
+                    <th className="text-right">max DD</th>
+                    <th className="text-right">trades</th>
+                    <th className="text-right">BTC wt</th>
+                    <th className="text-right">value</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cmp.books.map((b) => (
+                    <tr key={b.venue} className="border-b border-border/40">
+                      <td className="py-1.5">
+                        <span style={{ color: SERIES_COLOR[b.venue] }}>&#9632;</span>{" "}
+                        {b.venue}
+                        {!b.isPaper && <span className="text-muted-foreground"> (real orders)</span>}
+                      </td>
+                      <td className="text-muted-foreground">{b.strategy}</td>
+                      <td className={`text-right ${b.returnSince >= 0 ? "text-[oklch(0.82_0.22_145)]" : "text-destructive"}`}>
+                        {b.returnSince >= 0 ? "+" : ""}{b.returnSince.toFixed(2)}%
+                      </td>
+                      <td className="text-right text-muted-foreground">{b.maxDrawdownSince.toFixed(2)}%</td>
+                      <td className="text-right text-muted-foreground">{b.tradesSince}</td>
+                      <td className="text-right text-muted-foreground">{(b.btcWeight * 100).toFixed(1)}%</td>
+                      <td className="text-right">${b.valueNow.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+                    </tr>
+                  ))}
+                  <tr className="border-t border-border">
+                    <td className="py-1.5">
+                      <span style={{ color: SERIES_COLOR["buy & hold"] }}>&#9632;</span> buy &amp; hold
+                    </td>
+                    <td className="text-muted-foreground">benchmark</td>
+                    <td className={`text-right ${cmp.benchmark.returnSince >= 0 ? "text-[oklch(0.82_0.22_145)]" : "text-destructive"}`}>
+                      {cmp.benchmark.returnSince >= 0 ? "+" : ""}{cmp.benchmark.returnSince.toFixed(2)}%
+                    </td>
+                    <td className="text-right text-muted-foreground">{cmp.benchmark.maxDrawdownSince.toFixed(2)}%</td>
+                    <td className="text-right text-muted-foreground">0</td>
+                    <td className="text-right text-muted-foreground">100%</td>
+                    <td className="text-right text-muted-foreground">&mdash;</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            {curveData.length > 1 && (
+              <div className="mt-4" style={{ height: 260 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={curveData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.3 0.02 260)" />
+                    <XAxis dataKey="time" stroke="oklch(0.6 0.02 260)" fontSize={10} minTickGap={40} />
+                    <YAxis stroke="oklch(0.6 0.02 260)" fontSize={10} unit="%" />
+                    <Tooltip
+                      contentStyle={{ background: "oklch(0.18 0.02 260)", border: "1px solid oklch(0.3 0.02 260)", fontSize: 11 }}
+                      formatter={(v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`}
+                    />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                    {cmp.books.map((b) => (
+                      <Line key={b.venue} type="monotone" dataKey={b.venue} stroke={SERIES_COLOR[b.venue] ?? "#888"}
+                            strokeWidth={2} dot={false} connectNulls />
+                    ))}
+                    <Line type="monotone" dataKey="buy & hold" stroke={SERIES_COLOR["buy & hold"]}
+                          strokeWidth={2} strokeDasharray="4 3" dot={false} connectNulls />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+
+            {/* For a book that trades once a quarter, the useful daily number is
+                not its return — it is how far it is from its next trade. */}
+            {cmp.allocation && cmp.mode === "static" && (
+              <div className="mt-4 text-xs font-mono-tech border-t border-border pt-3 grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div>
+                  <div className="text-muted-foreground uppercase">BTC weight</div>
+                  <div className="text-sm mt-0.5">{cmp.allocation.current.toFixed(1)}%</div>
+                </div>
+                <div>
+                  <div className="text-muted-foreground uppercase">Target &plusmn; band</div>
+                  <div className="text-sm mt-0.5">
+                    {cmp.allocation.target.toFixed(0)}% &plusmn; {cmp.allocation.band.toFixed(0)}pp
+                  </div>
+                </div>
+                <div>
+                  <div className="text-muted-foreground uppercase">Sells above</div>
+                  <div className="text-sm mt-0.5">
+                    {cmp.allocation.sellAbovePrice
+                      ? `$${cmp.allocation.sellAbovePrice.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+                      : "\u2014"}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-muted-foreground uppercase">Buys below</div>
+                  <div className="text-sm mt-0.5">
+                    {cmp.allocation.buyBelowPrice
+                      ? `$${cmp.allocation.buyBelowPrice.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+                      : "\u2014"}
+                  </div>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
       )}
 
       {/* Summary Cards */}

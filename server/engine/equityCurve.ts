@@ -53,8 +53,19 @@ export function reconstructEquity(
   const t = [...trades].sort((a, b) => a.ts - b.ts);
   const p = [...prices].sort((a, b) => a.ts - b.ts);
   if (t.length === 0) {
-    // No trades: holdings never changed, so the current mark is all we can honestly place.
-    return current ? [{ ts: current.ts, value: current.cashUsd + current.btcHolding * current.price }] : [];
+    // No trades at all means holdings have NEVER changed since seeding, so the
+    // current cash/BTC are also the historical cash/BTC and the whole series can
+    // be valued from them. This is the normal case for a freshly seeded book and
+    // for the static allocation between rebalances — returning a single point
+    // there would make an untraded book look like it had no history to measure,
+    // when in fact its history is fully recoverable.
+    if (!current) return [];
+    const out = p.map((pt) => ({ ts: pt.ts, value: current.cashUsd + current.btcHolding * pt.price }));
+    const last = out[out.length - 1];
+    if (!last || current.ts > last.ts) {
+      out.push({ ts: current.ts, value: current.cashUsd + current.btcHolding * current.price });
+    }
+    return out;
   }
 
   const out: EquityPoint[] = [];
