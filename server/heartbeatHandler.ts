@@ -28,6 +28,7 @@ import {
 import { notifyOwner } from "./_core/notification";
 import { applyExternalModifiers, signalFromScores, type ExternalSignals } from "./engine/externalModifiers";
 import { executeSignalTrade, getRealVenue } from "./engine/executionVenue";
+import { collectPositioning } from "./engine/positioningCollector";
 import * as db from "./db";
 
 /**
@@ -240,6 +241,12 @@ export async function handleHeartbeat() {
 
     // 3. Champion-challenger promotion check (cheap; just a stats test on resolved signals).
     await runPromotionCheck();
+
+    // 3b. Record hourly positioning and flow. Exchanges discard this after
+    //     ~30 days and none of them serve it retroactively, so the only way to
+    //     ever have a usable sample is to write it down as it happens. Runs on
+    //     every heartbeat regardless of the signal throttle, and never throws.
+    await collectPositioning().catch((e) => console.warn("[Positioning] collection error:", e));
 
     // 4. Run optimization once per UTC day at hour 0 — always runs regardless
     //    of the schedule setting.

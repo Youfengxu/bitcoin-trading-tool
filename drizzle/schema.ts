@@ -9,6 +9,7 @@ import {
   bigint,
   boolean,
   json,
+  unique,
 } from "drizzle-orm/mysql-core";
 
 // ─── Users ───────────────────────────────────────────────────────────
@@ -135,6 +136,46 @@ export const simulatorTrades = mysqlTable("simulator_trades", {
   ts: bigint("ts", { mode: "number" }).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
+
+/**
+ * Hourly derivatives positioning and flow, recorded forward.
+ *
+ * Every exchange discards this data quickly: OKX serves 30 days of hourly
+ * stats, Binance 21, Bybit 8, and none of them paginate further back — checked
+ * 2026-08-16. So a positioning-based signal cannot be backtested on history
+ * that does not exist; the only way to obtain a usable sample is to start
+ * writing it down. Six currencies at hourly resolution reach ~2,000 bars each
+ * within three months, against the ~60 daily bars that made the first
+ * positioning test inconclusive.
+ *
+ * (ccy, ts) is unique so a collector run can re-fetch OKX's whole 720-row
+ * window every time and simply let duplicates fall away. That makes the
+ * collector self-healing: any gap left by downtime is refilled on the next run
+ * with no gap-tracking logic.
+ */
+export const positioningSnapshots = mysqlTable("positioning_snapshots", {
+  id: int("id").autoincrement().primaryKey(),
+  /** Currency the stats aggregate over, e.g. BTC. OKX reports these per-ccy. */
+  ccy: varchar("ccy", { length: 16 }).notNull(),
+  /** Start of the hour bucket, ms. */
+  ts: bigint("ts", { mode: "number" }).notNull(),
+  /** Open interest across contracts, USD. */
+  openInterestUsd: double("openInterestUsd"),
+  /** Contract trading volume for the bucket, USD. */
+  volumeUsd: double("volumeUsd"),
+  /** Long/short ACCOUNT ratio — how retail is positioned, not size-weighted. */
+  longShortRatio: double("longShortRatio"),
+  /** Taker volume crossing the spread to buy / to sell. */
+  takerBuyUsd: double("takerBuyUsd"),
+  takerSellUsd: double("takerSellUsd"),
+  /** Perp funding rate in effect, e.g. 0.0001 = 0.01%/8h. */
+  fundingRate: double("fundingRate"),
+  /** Spot close for the bucket, so OI moves can be read against price. */
+  price: double("price"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (t) => ({
+  ccyTs: unique("positioning_ccy_ts").on(t.ccy, t.ts),
+}));
 
 // ─── Weekly Performance Snapshots ────────────────────────────────────
 export const weeklyPerformance = mysqlTable("weekly_performance", {

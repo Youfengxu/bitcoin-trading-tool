@@ -57,6 +57,13 @@
       "when": 1786799482292,
       "tag": "0007_spicy_greymalkin",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "5",
+      "when": 1786839891798,
+      "tag": "0008_exotic_george_stacy",
+      "breakpoints": true
     }
   ]
 }

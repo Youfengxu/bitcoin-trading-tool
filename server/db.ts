@@ -8,6 +8,7 @@ import {
   tradingSignals,
   simulatorState,
   simulatorTrades,
+  positioningSnapshots,
   weeklyPerformance,
   strategyParams,
   validationLog,
@@ -297,6 +298,66 @@ export async function getTradesInRange(
       lte(simulatorTrades.ts, endTs)
     ))
     .orderBy(desc(simulatorTrades.ts));
+}
+
+// ─── Positioning Snapshots ───────────────────────────────────────────
+/**
+ * Inserts hourly positioning rows, discarding any already stored.
+ *
+ * Relies on the (ccy, ts) unique constraint rather than checking first: the
+ * collector re-submits its whole 30-day window each run, so duplicates are the
+ * normal case and letting the DB reject them is what makes the collector
+ * self-healing after downtime. Returns the number of genuinely new rows.
+ */
+export async function insertPositioningSnapshots(rows: Array<{
+  ccy: string; ts: number;
+  openInterestUsd?: number; volumeUsd?: number; longShortRatio?: number;
+  takerBuyUsd?: number; takerSellUsd?: number; fundingRate?: number; price?: number;
+}>): Promise<number> {
+  const db = await getDb();
+  if (!db || rows.length === 0) return 0;
+
+  const existing = await db.select({ ts: positioningSnapshots.ts })
+    .from(positioningSnapshots)
+    .where(eq(positioningSnapshots.ccy, rows[0].ccy));
+  const have = new Set(existing.map((r) => r.ts));
+  const fresh = rows.filter((r) => !have.has(r.ts));
+  if (!fresh.length) return 0;
+
+  // Chunked: a 720-row window across a few currencies exceeds comfortable
+  // single-statement placeholder limits.
+  for (let i = 0; i < fresh.length; i += 200) {
+    await db.insert(positioningSnapshots).values(fresh.slice(i, i + 200));
+  }
+  return fresh.length;
+}
+
+/** Recorded positioning history for one currency, oldest first. */
+export async function getPositioningHistory(ccy: string, limit = 2000) {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db.select().from(positioningSnapshots)
+    .where(eq(positioningSnapshots.ccy, ccy))
+    .orderBy(desc(positioningSnapshots.ts)).limit(limit);
+  return rows.reverse();
+}
+
+/** Row counts and coverage per currency, for monitoring the collector. */
+export async function getPositioningCoverage() {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db.select().from(positioningSnapshots);
+  const byCcy = new Map<string, number[]>();
+  for (const r of rows) {
+    const arr = byCcy.get(r.ccy) ?? [];
+    arr.push(r.ts);
+    byCcy.set(r.ccy, arr);
+  }
+  return Array.from(byCcy.entries()).map(([ccy, ts]) => ({
+    ccy, rows: ts.length,
+    oldest: Math.min(...ts), newest: Math.max(...ts),
+    days: (Math.max(...ts) - Math.min(...ts)) / 86400000,
+  }));
 }
 
 // ─── Weekly Performance ──────────────────────────────────────────────
