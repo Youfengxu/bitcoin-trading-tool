@@ -1,7 +1,45 @@
 # Regime Classifier — Proposal
 
-**Status:** proposed, not started · **Date:** 2026-08-16
+**Status:** Tier 1 COMPLETE — all three methods failed · Tier 2 pending data
+**Date:** 2026-08-16 · **Outcome recorded:** 2026-08-16
 **Prerequisite for Tier 2:** positioning collector running since 2026-08-16
+
+---
+
+## 0. Outcome (added after execution)
+
+Tier 1 ran in full. Results against the criteria in section 5:
+
+| step | method | criteria passed |
+|---|---|---|
+| 1 | GMM diagnostic | 3/3 — proceed |
+| 2 | Hidden Markov Model | **1/4** |
+| 3 | BOCPD | **0/4** |
+
+Accuracy across every method tried — eight threshold rules, an HMM at 2/3/4
+states, and BOCPD at four hazard rates — sits between 46.2% and 51.3% against
+a 47.2% base rate. Nothing reaches the +8pp bar; the best is +4.1pp.
+
+The failure mode is identical in all of them: **positive in the bull window,
+negative in the bear one.** Every method converges on "hold more", which helps
+where holding helps and hurts where the engine's defensiveness was the point.
+That consistency is itself the finding — these methods are all extracting the
+same thing (price has been rising), and at a weekly horizon that has no
+predictive content beyond the persistence of trend.
+
+The GMM diagnostic passing and the classifiers failing is explained by *what*
+separated: its +15.39% forward-return spread came largely from one rare state
+(5.8% of bars, +8.83%). A rare strong state does not make a good binary switch,
+because the switch is on or off for the whole book. The diagnostic tested for
+separation when the switch needs *balanced, frequent* separation — a design
+error in the diagnostic, recorded rather than papered over.
+
+**Tier 1 is closed.** Price-derived regime classification does not call the
+direction of the coming week better than chance on this data, by threshold, by
+state model, or by changepoint detection. Tier 2 remains open and untouched by
+this result: it uses a different information source, and the abandonment
+condition named in section 6 (no stable cluster structure) did NOT occur —
+structure exists, it simply does not predict direction.
 
 ---
 
