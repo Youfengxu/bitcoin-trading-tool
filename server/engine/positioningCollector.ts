@@ -30,11 +30,47 @@ import * as okx from "./okxClient";
 import * as db from "../db";
 
 /**
+ * OKX's statistics endpoints rate-limit aggressively and reply 429 rather than
+ * degrading. A scan of 30 currencies without pacing returned five successes and
+ * twenty-five 429s — which reads exactly like "these currencies have no data"
+ * and is how the first survey wrongly concluded only 8 currencies were covered.
+ * Every one of the 30 has full history when requests are paced.
+ *
+ * So: space out requests, and retry a 429 with backoff rather than treating an
+ * empty result as an absence of data.
+ */
+const REQUEST_SPACING_MS = 250;
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+async function paced<T>(fn: () => Promise<T>, fallback: T, attempts = 3): Promise<T> {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const out = await fn();
+      await sleep(REQUEST_SPACING_MS);
+      return out;
+    } catch (e) {
+      const is429 = e instanceof Error && /429|Too Many Requests/i.test(e.message);
+      if (!is429 && i === attempts - 1) break;
+      await sleep(800 * (i + 1));
+    }
+  }
+  return fallback;
+}
+
+/**
  * Currencies to record. OKX reports these statistics per-currency (aggregated
  * across that currency's contracts), not per-instrument.
  */
 export function collectedCurrencies(): string[] {
-  const raw = process.env.POSITIONING_CCYS ?? "BTC,ETH,SOL,XRP,DOGE,LINK";
+  // Default list is chosen for REGIME DIVERSITY and low correlation, not for
+  // volume. Hourly crypto returns across 20 assets correlate at 0.449, so the
+  // effective independent sample is N/(1+(N-1)p) = 2.1 — and it asymptotes at
+  // 1/p = 2.2 however many are added. Extra correlated majors buy almost
+  // nothing; assets that move idiosyncratically buy the regime variety that a
+  // 30-day window otherwise lacks. UNI, ZEC, WLD and HYPE each reversed
+  // direction inside the current window.
+  const raw = process.env.POSITIONING_CCYS ??
+    "BTC,ETH,SOL,XRP,DOGE,LINK,AVAX,BNB,TRX,UNI,SUI,FIL,BCH,NEAR,ZEC,PEPE,WLD,HYPE,OKB,ETHFI";
   return raw.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
 }
 
@@ -57,10 +93,12 @@ export interface Row {
  */
 export async function buildRows(ccy: string): Promise<Row[]> {
   const q = `ccy=${ccy}&period=1H`;
-  const [oi, ls, tv, candles, funding] = await Promise.all([
-    okx.publicGet<string[]>(`/api/v5/rubik/stat/contracts/open-interest-volume?${q}`).catch(() => []),
-    okx.publicGet<string[]>(`/api/v5/rubik/stat/contracts/long-short-account-ratio?${q}`).catch(() => []),
-    okx.publicGet<string[]>(`/api/v5/rubik/stat/taker-volume?${q}&instType=CONTRACTS`).catch(() => []),
+  // Sequential, not Promise.all: firing five requests at once is what trips the
+  // rate limiter, and a 429 here silently produces a row with null columns.
+  const oi = await paced(() => okx.publicGet<string[]>(`/api/v5/rubik/stat/contracts/open-interest-volume?${q}`), []);
+  const ls = await paced(() => okx.publicGet<string[]>(`/api/v5/rubik/stat/contracts/long-short-account-ratio?${q}`), []);
+  const tv = await paced(() => okx.publicGet<string[]>(`/api/v5/rubik/stat/taker-volume?${q}&instType=CONTRACTS`), []);
+  const [candles, funding] = await Promise.all([
     // 750, not 300: the stats window is 720 hours, and price is what makes an
     // open-interest change readable (OI up + price up is crowding; OI up +
     // price down is new shorts). Under-fetching here left 420 of 720 rows with
