@@ -103,6 +103,16 @@ services:
       OKX_SECRET_KEY: ${OKX_SECRET_KEY:-}
       OKX_PASSPHRASE: ${OKX_PASSPHRASE:-}
       OKX_DEMO: ${OKX_DEMO:-1}
+      # Scripts that reason about the allocated book (e.g. fixSeedBaselines)
+      # need the same book/strategy config the app has, or they silently skip
+      # the venue instead of failing — which is how the okx-demo seed repair
+      # first reported "no rule -- left alone".
+      OKX_BOOK_CAPITAL_SGD: ${OKX_BOOK_CAPITAL_SGD:-0}
+      EXECUTION_VENUE: ${EXECUTION_VENUE:-internal}
+      STRATEGY_MODE: ${STRATEGY_MODE:-engine}
+      STATIC_TARGET_WEIGHT: ${STATIC_TARGET_WEIGHT:-0.40}
+      STATIC_REBALANCE_BAND: ${STATIC_REBALANCE_BAND:-0.10}
+      TRADING_FEE_BPS: ${TRADING_FEE_BPS:-0}
     restart: "no"
 
 volumes:
