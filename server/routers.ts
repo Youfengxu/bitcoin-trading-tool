@@ -29,7 +29,11 @@ import {
   OPPORTUNITY_COST_LAMBDA,
   CHALLENGER_PROMOTION_MIN_N,
   CHALLENGER_PROMOTION_PVALUE,
+  strategyMode,
+  staticTargetWeight,
+  staticRebalanceBand,
 } from "../shared/tradingTypes";
+import { reconstructEquity, maxDrawdown } from "./engine/equityCurve";
 import { fetchExternalSignals } from "./heartbeatHandler";
 import { applyExternalModifiers } from "./engine/externalModifiers";
 import { executeSignalTrade, getRealVenue } from "./engine/executionVenue";
@@ -132,8 +136,18 @@ export const appRouter = router({
         portfolioValue: simState?.totalValueUsd,
       });
 
-      // Manual generate always acts immediately (no confirmation buffer).
-      if (signal.signal !== "hold") {
+      // Manual generate acts immediately (no confirmation buffer) — but ONLY
+      // when signals are what trades. Under STRATEGY_MODE=static the books
+      // follow a fixed weight, and letting this button place an engine trade
+      // would override the configured strategy from the UI, on real (demo)
+      // funds, and contaminate the very static-vs-engine comparison the
+      // shadow-engine book exists to provide. The signal is still computed,
+      // recorded and returned; it simply does not move the book.
+      const mode = strategyMode();
+      let executed = false;
+
+      if (signal.signal !== "hold" && mode === "engine") {
+        executed = true;
         await executeSimulatorTrade(signal.signal, metrics.price, signal.reasoning, signalId ?? undefined, signal.confidence);
         const updatedSimState = await db.getSimulatorState();
         try {
@@ -145,9 +159,20 @@ export const appRouter = router({
         try {
           await sendTelegramNotification(signal.signal, metrics.price, signal.reasoning, updatedSimState?.totalValueUsd ?? 0);
         } catch (e) { console.warn("[Telegram] Failed:", e); }
+      } else if (signal.signal !== "hold") {
+        console.log(
+          `[Signals] ${signal.signal.toUpperCase()} generated but NOT executed — ` +
+          `STRATEGY_MODE=${mode}, the static allocation controls the book.`
+        );
       }
 
-      return { signal: signal.signal, confidence: signal.confidence, reasoning: signal.reasoning, price: metrics.price, ts };
+      return {
+        signal: signal.signal, confidence: signal.confidence,
+        reasoning: signal.reasoning, price: metrics.price, ts,
+        /** False in static mode: the signal is advisory and moved nothing. */
+        executed,
+        strategyMode: mode,
+      };
     }),
 
     list: publicProcedure
@@ -291,10 +316,13 @@ export const appRouter = router({
     validation: publicProcedure
       .input(z.object({ limit: z.number().default(20) }).optional())
       .query(async ({ input }) => db.getValidationHistory(input?.limit ?? 20)),
-    summary: publicProcedure.query(async () => {
-      const state = await db.getSimulatorState();
+    summary: publicProcedure
+      .input(z.object({ venue: z.string().default(db.INTERNAL_VENUE) }).optional())
+      .query(async ({ input }) => {
+      const venue = input?.venue ?? db.INTERNAL_VENUE;
+      const state = await db.getSimulatorState(venue);
       const signals = await db.getRecentSignals(1000);
-      const trades = await db.getRecentTrades(1000);
+      const trades = await db.getRecentTrades(1000, venue);
       const weekly = await db.getWeeklyPerformance(52);
       const resolvedSignals = signals.filter((s) => s.outcome !== "pending");
       const wins = resolvedSignals.filter((s) => s.outcome === "win").length;
@@ -311,18 +339,27 @@ export const appRouter = router({
         sharpeRatio = stdDev > 0 ? (avgReturn / stdDev) * Math.sqrt(52) : 0; // annualized
       }
 
-      // Compute max drawdown from trade history
-      let maxDrawdown = 0;
-      if (trades.length > 0) {
-        let peak = trades[trades.length - 1]?.totalValueAfter ?? 10000;
-        for (let i = trades.length - 1; i >= 0; i--) {
-          const val = trades[i].totalValueAfter;
-          if (val > peak) peak = val;
-          const dd = (peak - val) / peak;
-          if (dd > maxDrawdown) maxDrawdown = dd;
-        }
-      }
+      // Drawdown is reconstructed from the price series rather than sampled at
+      // trades. Sampling at trades under-reports badly for a low-turnover book:
+      // the static allocation trades ~once a quarter, so a deep intra-quarter
+      // decline between two trades would be invisible. Since drawdown is the
+      // axis on which static was chosen over the engine, measuring it a way that
+      // flatters low turnover would beg the question. See engine/equityCurve.ts.
+      const priceSeries = (await db.getRecentMetrics(5000)).map((m) => ({ ts: m.ts, price: m.price }));
+      const curve = reconstructEquity(
+        trades.map((t) => ({ ts: t.ts, cashAfter: t.cashAfter, btcAfter: t.btcAfter })),
+        priceSeries,
+        state
+          ? {
+              cashUsd: state.cashUsd, btcHolding: state.btcHolding,
+              price: state.lastPrice ?? priceSeries[priceSeries.length - 1]?.price ?? 0,
+              ts: Date.now(),
+            }
+          : undefined
+      );
+      const drawdown = maxDrawdown(curve);
 
+      const mode = strategyMode();
       return {
         portfolioValue: state?.totalValueUsd ?? 10000,
         seedAmount: state?.seedAmountUsd ?? 10000,
@@ -334,7 +371,18 @@ export const appRouter = router({
         totalTrades: trades.length,
         weeklyReports: weekly.length,
         sharpeRatio,
-        maxDrawdown: maxDrawdown * 100,
+        maxDrawdown: drawdown * 100,
+        venue,
+        /**
+         * In static mode the signals these stats are drawn from are ADVISORY —
+         * they no longer move this book. winRate then measures the engine's
+         * signal accuracy, not the strategy's performance, and the UI must say
+         * so or the two read as the same number.
+         */
+        strategyMode: mode,
+        signalsAreAdvisory: mode === "static" && venue !== "shadow-engine",
+        /** Points behind the drawdown figure — 2 or fewer means treat it as unmeasured. */
+        equityPoints: curve.length,
       };
     }),
   }),

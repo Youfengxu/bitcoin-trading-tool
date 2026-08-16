@@ -8,9 +8,17 @@ import { toast } from "sonner";
 
 export default function Signals() {
   const { data: signals, isLoading, refetch } = trpc.signals.list.useQuery({ limit: 50 }, { refetchInterval: 30000 });
+  const { data: summary } = trpc.performance.summary.useQuery(undefined, { refetchInterval: 60000 });
+  const advisory = summary?.signalsAreAdvisory ?? false;
   const generateMutation = trpc.signals.generate.useMutation({
     onSuccess: (data) => {
-      toast.success(`Signal generated: ${data.signal.toUpperCase()} @ $${data.price.toFixed(0)}`);
+      // Say plainly whether the signal moved the book. Reporting "generated"
+      // for a signal that traded and one that did not, identically, is how a
+      // user ends up believing the engine is still running their money.
+      toast.success(
+        `${data.signal.toUpperCase()} @ $${data.price.toFixed(0)} — ` +
+        (data.executed ? "trade executed" : "advisory only, no trade"),
+      );
       refetch();
     },
     onError: (err) => toast.error(err.message),
@@ -35,6 +43,13 @@ export default function Signals() {
           <p className="text-muted-foreground text-sm mt-1 font-mono-tech">
             Automated buy/sell signal log with reasoning
           </p>
+          {advisory && (
+            <p className="text-amber-500 text-xs mt-1 font-mono-tech">
+              ADVISORY ONLY &middot; STRATEGY_MODE=static &mdash; these signals are recorded and
+              scored but do not trade. The static allocation controls the book; the
+              shadow-engine book tracks what these signals would have done.
+            </p>
+          )}
         </div>
         <div className="flex gap-2">
           <Button
@@ -43,7 +58,7 @@ export default function Signals() {
             className="font-mono-tech text-xs bg-primary hover:bg-primary/80"
           >
             {generateMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Zap className="h-4 w-4 mr-1" />}
-            Generate Signal
+            {advisory ? "Generate (no trade)" : "Generate Signal"}
           </Button>
           <Button
             onClick={() => validateMutation.mutate()}

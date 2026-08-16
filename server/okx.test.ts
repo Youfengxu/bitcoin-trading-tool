@@ -18,6 +18,9 @@ import {
 } from "./engine/okxClient";
 import { getExecutionVenue, resetExecutionVenue, planRebalance, SHADOW_VENUE } from "./engine/executionVenue";
 import {
+  reconstructEquity, maxDrawdown, type TradePoint, type PricePoint,
+} from "./engine/equityCurve";
+import {
   convictionScaledFraction,
   TRADE_COOLDOWN_BARS,
   MIN_TRADE_NOTIONAL_USD,
@@ -379,5 +382,72 @@ describe("shadow book", () => {
     expect(SHADOW_VENUE).not.toBe("okx-live");
     // The name must say what it trades — it shows up verbatim in the UI dropdown.
     expect(SHADOW_VENUE).toContain("engine");
+  });
+});
+
+// ─── Equity curve reconstruction ──────────────────────────────────────
+
+describe("reconstructEquity / maxDrawdown", () => {
+  const HOUR = 3600_000;
+  const prices = (vals: number[], from = 0): PricePoint[] =>
+    vals.map((price, i) => ({ ts: from + i * HOUR, price }));
+
+  it("values the book between trades using the price series, not just at trades", () => {
+    // One trade, then a crash and partial recovery with no further trading.
+    const trades: TradePoint[] = [{ ts: 0, cashAfter: 5000, btcAfter: 0.1 }];
+    const curve = reconstructEquity(trades, prices([50000, 25000, 40000]));
+    expect(curve.map((p) => p.value)).toEqual([10000, 7500, 9000]);
+  });
+
+  it("catches a drawdown that occurs entirely between two trades", () => {
+    // This is the case the old trade-sampled method reported as 0%.
+    const trades: TradePoint[] = [{ ts: 0, cashAfter: 5000, btcAfter: 0.1 }];
+    const curve = reconstructEquity(trades, prices([50000, 10000, 50000]));
+    expect(maxDrawdown(curve)).toBeCloseTo(0.4, 10); // 10000 -> 6000
+  });
+
+  it("applies a trade's new holdings only from its own timestamp onward", () => {
+    const trades: TradePoint[] = [
+      { ts: 0, cashAfter: 5000, btcAfter: 0.1 },
+      { ts: 2 * HOUR, cashAfter: 10000, btcAfter: 0 }, // sold out at bar 2
+    ];
+    const curve = reconstructEquity(trades, prices([50000, 50000, 50000, 10000]));
+    // Last bar must be unaffected by the crash — the book is all cash by then.
+    expect(curve[curve.length - 1].value).toBe(10000);
+  });
+
+  it("ignores price points before the first trade rather than inventing holdings", () => {
+    const trades: TradePoint[] = [{ ts: 5 * HOUR, cashAfter: 5000, btcAfter: 0.1 }];
+    const curve = reconstructEquity(trades, prices([50000, 50000, 50000]));
+    expect(curve).toHaveLength(0);
+  });
+
+  it("appends the current mark so an open drawdown is visible before the next trade", () => {
+    const trades: TradePoint[] = [{ ts: 0, cashAfter: 5000, btcAfter: 0.1 }];
+    const curve = reconstructEquity(trades, prices([50000]), {
+      cashUsd: 5000, btcHolding: 0.1, price: 20000, ts: 10 * HOUR,
+    });
+    expect(curve[curve.length - 1].value).toBe(7000);
+    expect(maxDrawdown(curve)).toBeCloseTo(0.3, 10);
+  });
+
+  it("handles a book that has never traded", () => {
+    const curve = reconstructEquity([], prices([50000, 60000]), {
+      cashUsd: 4000, btcHolding: 0.06, price: 60000, ts: HOUR,
+    });
+    expect(curve).toHaveLength(1);
+    expect(curve[0].value).toBeCloseTo(7600, 10);
+    expect(maxDrawdown(curve)).toBe(0);
+  });
+
+  it("sorts defensively — the DB helpers return newest-first", () => {
+    const trades: TradePoint[] = [{ ts: 0, cashAfter: 5000, btcAfter: 0.1 }];
+    const desc = prices([50000, 25000, 40000]).reverse();
+    expect(reconstructEquity(trades, desc).map((p) => p.value)).toEqual([10000, 7500, 9000]);
+  });
+
+  it("reports no drawdown for a monotonically rising book", () => {
+    const trades: TradePoint[] = [{ ts: 0, cashAfter: 0, btcAfter: 1 }];
+    expect(maxDrawdown(reconstructEquity(trades, prices([100, 200, 300])))).toBe(0);
   });
 });

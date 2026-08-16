@@ -12,10 +12,16 @@ import { Streamdown } from "streamdown";
 import { toast } from "sonner";
 
 export default function Performance() {
-  const { data: summary, isLoading } = trpc.performance.summary.useQuery(undefined, { refetchInterval: 30000 });
+  // Books are selectable because there are now three with different strategies:
+  // internal/okx-demo run the static allocation, shadow-engine runs the engine.
+  // A single hardcoded book would silently report one strategy's numbers as if
+  // they were the app's.
+  const [venue, setVenue] = useState("internal");
+  const { data: venues } = trpc.simulator.venues.useQuery(undefined, { refetchInterval: 60000 });
+  const { data: summary, isLoading } = trpc.performance.summary.useQuery({ venue }, { refetchInterval: 30000 });
   const { data: weekly } = trpc.performance.weekly.useQuery({ limit: 52 }, { refetchInterval: 60000 });
   const { data: validation } = trpc.performance.validation.useQuery({ limit: 20 }, { refetchInterval: 60000 });
-  const { data: trades } = trpc.simulator.trades.useQuery({ limit: 200 }, { refetchInterval: 60000 });
+  const { data: trades } = trpc.simulator.trades.useQuery({ limit: 200, venue }, { refetchInterval: 60000 });
 
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const analyzeMutation = trpc.ai.analyze.useMutation({
@@ -71,15 +77,54 @@ export default function Performance() {
             Weekly returns &middot; Validation &middot; AI analysis
           </p>
         </div>
-        <Button
-          onClick={() => analyzeMutation.mutate({})}
-          disabled={analyzeMutation.isPending}
-          className="font-mono-tech text-xs bg-primary hover:bg-primary/80"
-        >
-          {analyzeMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Brain className="h-4 w-4 mr-1" />}
-          AI Analysis
-        </Button>
+        <div className="flex items-center gap-2">
+          <select
+            value={venue}
+            onChange={(e) => setVenue(e.target.value)}
+            className="bg-background border border-border rounded px-2 py-1 text-xs font-mono-tech"
+          >
+            {(venues ?? ["internal"]).map((v: string) => (
+              <option key={v} value={v}>{v}</option>
+            ))}
+          </select>
+          <Button
+            onClick={() => analyzeMutation.mutate({})}
+            disabled={analyzeMutation.isPending}
+            className="font-mono-tech text-xs bg-primary hover:bg-primary/80"
+          >
+            {analyzeMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Brain className="h-4 w-4 mr-1" />}
+            AI Analysis
+          </Button>
+        </div>
       </div>
+
+      {/* Caveats that would otherwise make these numbers quietly wrong to read.
+          The internal book's history spans a strategy change, so its lifetime
+          return blends two strategies rather than measuring either. */}
+      {(summary?.signalsAreAdvisory || (summary?.equityPoints ?? 0) < 3) && (
+        <div className="text-xs font-mono-tech text-amber-500 border border-amber-500/30 rounded px-3 py-2 space-y-1">
+          {summary?.signalsAreAdvisory && (
+            <div>
+              * <strong>{venue}</strong> runs the STATIC allocation. Signals are advisory and
+              do not trade it, so Signal Win Rate measures the engine&apos;s accuracy, not this
+              book&apos;s performance. Select <strong>shadow-engine</strong> to see the engine
+              traded on paper.
+            </div>
+          )}
+          {venue === "internal" && (
+            <div>
+              This book&apos;s history spans a strategy change (engine until 2026-08-16, static
+              after), so its lifetime return blends both. Compare books from 2026-08-16 onward.
+            </div>
+          )}
+          {(summary?.equityPoints ?? 0) < 3 && (
+            <div>
+              * Max Drawdown is based on {summary?.equityPoints ?? 0} equity point(s) — too few
+              to be meaningful yet. It becomes reliable as price history accumulates.
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Summary Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
@@ -101,7 +146,9 @@ export default function Performance() {
         </Card>
         <Card className="hud-panel border-border">
           <CardContent className="pt-4">
-            <div className="text-xs font-mono-tech text-muted-foreground uppercase">Win Rate</div>
+            <div className="text-xs font-mono-tech text-muted-foreground uppercase">
+              {summary?.signalsAreAdvisory ? "Signal Win Rate*" : "Win Rate"}
+            </div>
             <div className="font-hud text-lg text-[oklch(0.82_0.18_195)] mt-1">
               {((summary?.winRate ?? 0) * 100).toFixed(1)}%
             </div>
@@ -129,7 +176,9 @@ export default function Performance() {
         </Card>
         <Card className="hud-panel border-border">
           <CardContent className="pt-4">
-            <div className="text-xs font-mono-tech text-muted-foreground uppercase">Max Drawdown</div>
+            <div className="text-xs font-mono-tech text-muted-foreground uppercase">
+              Max Drawdown{(summary?.equityPoints ?? 0) < 3 ? "*" : ""}
+            </div>
             <div className="font-hud text-lg text-destructive mt-1">
               {(summary?.maxDrawdown ?? 0).toFixed(2)}%
             </div>
