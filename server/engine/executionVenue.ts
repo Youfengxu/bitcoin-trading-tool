@@ -452,8 +452,11 @@ export async function seedAllocatedBook(venueName: string, btcPrice: number): Pr
   const cashUsd = capitalUsdt * (1 - btcWeight);
 
   await db.initSimulatorState(venueName);
+  // seedAmountUsd MUST be the USDT actually seeded. It defaults to 10000, and
+  // leaving it there makes an SGD-denominated book read as -22% on day one —
+  // the currency conversion misreported as a trading loss.
   await db.updateSimulatorState(
-    { cashUsd, btcHolding, totalValueUsd: capitalUsdt, lastPrice: btcPrice },
+    { cashUsd, btcHolding, totalValueUsd: capitalUsdt, seedAmountUsd: capitalUsdt, lastPrice: btcPrice },
     venueName
   );
   console.log(
@@ -679,6 +682,10 @@ export async function seedShadowBook(): Promise<void> {
       cashUsd: paper.cashUsd,
       btcHolding: paper.btcHolding,
       totalValueUsd: paper.totalValueUsd,
+      // Same trap: the shadow starts at the paper book's CURRENT value, so
+      // leaving the 10000 default would show the engine's past losses as the
+      // shadow's own on the day it opens.
+      seedAmountUsd: paper.totalValueUsd,
       lastPrice: paper.lastPrice ?? undefined,
     },
     SHADOW_VENUE

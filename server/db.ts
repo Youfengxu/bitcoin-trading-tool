@@ -229,6 +229,12 @@ export async function updateSimulatorState(
   update: {
     cashUsd?: number; btcHolding?: number; totalValueUsd?: number;
     lastPrice?: number; isRunning?: boolean;
+    /**
+     * Only a SEEDING routine should ever set this. It is the baseline every
+     * return figure is measured against, so changing it on a live book silently
+     * rewrites that book's entire reported performance.
+     */
+    seedAmountUsd?: number;
   },
   venue: string = INTERNAL_VENUE
 ) {
