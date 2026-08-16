@@ -49,8 +49,31 @@ import * as db from "./db";
  * Comparing against the date rather than the hour makes the marker advance with
  * time instead of latching.
  */
+// NOTE: these are in-memory only. They stop a task repeating within one process
+// but NOT across restarts, so each deploy re-fired the daily and weekly tasks.
+// Eight duplicate weekly_performance rows for 2026-W33 were written by eight
+// deploys in a single afternoon. The persistent guards below are the real check;
+// these remain as a cheap short-circuit that avoids a DB round trip per tick.
 let lastOptimizeDate = "";
 let lastWeeklyReportWeek = "";
+
+/**
+ * True when a weekly report has already been written for `weekKey`.
+ *
+ * Derived from the data rather than a stored marker: the newest row's weekEnd
+ * already says which week was last reported, so no schema change is needed and
+ * the guard cannot drift out of sync with the rows it protects.
+ */
+async function weeklyReportExistsFor(weekKey: string): Promise<boolean> {
+  const [latest] = await db.getWeeklyPerformance(1);
+  return !!latest && utcWeekKey(new Date(latest.weekEnd)) === weekKey;
+}
+
+/** True when the optimizer has already produced a params row today. */
+async function optimizerRanOn(dayKey: string): Promise<boolean> {
+  const latest = await db.getActiveStrategyParams();
+  return !!latest?.createdAt && utcDateKey(new Date(latest.createdAt)) === dayKey;
+}
 
 /** UTC calendar day, e.g. "2026-08-15". */
 export function utcDateKey(d: Date): string {
@@ -303,7 +326,7 @@ export async function handleHeartbeat() {
     // 4. Run optimization once per UTC day at hour 0 — always runs regardless
     //    of the schedule setting.
     const today = utcDateKey(now);
-    if (currentHour === 0 && lastOptimizeDate !== today) {
+    if (currentHour === 0 && lastOptimizeDate !== today && !(await optimizerRanOn(today))) {
       lastOptimizeDate = today;
       await runOptimization();
     }
@@ -311,7 +334,7 @@ export async function handleHeartbeat() {
     // 5. Generate the weekly report on Sundays — always runs regardless of the
     //    schedule setting.
     const thisWeek = utcWeekKey(now);
-    if (currentDay === 0 && lastWeeklyReportWeek !== thisWeek) {
+    if (currentDay === 0 && lastWeeklyReportWeek !== thisWeek && !(await weeklyReportExistsFor(thisWeek))) {
       lastWeeklyReportWeek = thisWeek;
       await generateWeeklyReport();
     }

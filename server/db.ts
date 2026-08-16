@@ -377,6 +377,27 @@ export async function insertWeeklyPerformance(perf: {
   await db.insert(weeklyPerformance).values(perf);
 }
 
+/**
+ * Corrects one weekly row. Repair-only: the values here are the basis of the
+ * weekly chart and of nothing else, but rewriting them changes reported history,
+ * so it belongs behind an explicit call rather than in the normal write path.
+ */
+export async function updateWeeklyPerformance(
+  id: number,
+  update: { startValue?: number; endValue?: number; returnPct?: number },
+) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(weeklyPerformance).set(update).where(eq(weeklyPerformance.id, id));
+}
+
+/** Removes a duplicate weekly row. Repair-only. */
+export async function deleteWeeklyPerformance(id: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(weeklyPerformance).where(eq(weeklyPerformance.id, id));
+}
+
 export async function getWeeklyPerformance(limit: number = 52) {
   const db = await getDb();
   if (!db) return [];
