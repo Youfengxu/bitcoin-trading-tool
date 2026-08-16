@@ -53,6 +53,16 @@
 import { computeAllMetrics, type CandleData, type AllMetrics } from "../engine/technicalAnalysis";
 import { generateSignal } from "../engine/signalGenerator";
 import * as okx from "../engine/okxClient";
+
+/**
+ * OKX rate-limits and replies 429 rather than degrading. Fetching six months of
+ * hourly history paginates ~43 requests per asset, so a multi-asset loop with no
+ * spacing trips the limit and silently drops assets — a run of this script
+ * returned 5 pairs and omitted BTC entirely, which looks like "insufficient
+ * history" and is not. Space the per-asset fetches out.
+ */
+const PACE_MS = 400;
+const pause = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 import { getCandleLimit, type StrategyParameters } from "../../shared/tradingTypes";
 import * as fs from "fs";
 
@@ -224,8 +234,9 @@ async function main() {
       try {
         const raw = await okx.fetchCandlesFrom("1h", HISTORY_START, 5000, instId);
         candles = raw.map((c) => ({ open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume, openTime: c.openTime }));
-      } catch { await new Promise((r) => setTimeout(r, 500 * (a + 1))); }
+      } catch { await pause(1200 * (a + 1)); }
     }
+    await pause(PACE_MS);
     if (!candles || candles.length < MIN_BARS) continue;
     const hi = Math.max(...candles.map((c) => c.high)), lo = Math.min(...candles.map((c) => c.low));
     if ((hi - lo) / ((hi + lo) / 2) < PEG_RANGE_PCT) continue;
