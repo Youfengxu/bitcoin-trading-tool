@@ -349,3 +349,65 @@ The first two runs of the validation disagreed on the sign of ρ (−0.339 vs
 as new candles arrive. Same defect class as the `Date.now()` window bug recorded
 earlier. Fixed by truncating to a pinned `END` timestamp; two consecutive runs
 now agree exactly. **Neither pre-fix reading should be cited.**
+
+---
+
+## 0d. What the engine does in a bull run — and the control that reframes it
+
+165 overlapping 90-day episodes, 5 assets, 3 years of contiguous hourly history
+(`bullRunBehaviour.ts`). Episodes overlap by design, so bucket counts are not
+independent observations; they describe shape, not significance.
+
+| regime bucket | n | hold | engine | static 40% | eng − static |
+|---|---|---|---|---|---|
+| bear < −20% | 41 | −33.8% | −17.3% | −13.6% | −3.7% |
+| soft bear −20..0% | 35 | −11.1% | −2.8% | −4.3% | +1.5% |
+| mild bull 0..25% | 38 | +10.5% | +3.8% | +4.9% | −1.1% |
+| good bull 25..50% | 20 | +35.9% | +13.3% | +14.9% | −1.6% |
+| strong 50..100% | 23 | +70.4% | +26.7% | +27.1% | −0.4% |
+| parabolic > 100% | 8 | +209.2% | +89.5% | +65.7% | +23.8% |
+
+**The engine captures ~35–40% of whatever the market does, in both directions.**
+Its average exposure is 38–43%, and that single number explains every row. The
+shortfall scales linearly with bull strength: **slope −0.57**, i.e. every +10pp of
+bull costs ~5.7pp of relative underperformance. It beat hold in **8 of 89 bull
+episodes (9%)**. Worst single episode: SOL from 2023-09-24, hold +390.9% against
+the engine's +150.2%.
+
+### The control that matters
+
+A **static 40% position, rebalanced on a 10% band**, was never previously tested
+against the engine. Over all 165 episodes:
+
+| | engine | static 40% |
+|---|---|---|
+| mean return | +5.7% | +5.6% |
+| mean maxDD | 15.7% | **13.8%** |
+| mean trades | 249 | **2** |
+
+The engine wins 70/165 (42%) — worse than a coin flip. It matches a static
+allocation on return, is *beaten* on drawdown, and takes 125× the trades to do
+it. The only bucket where it genuinely leads is parabolic (+23.8pp, n=8), and
+that is mechanical rather than skilful: exposure drifts up to 43–49% in a melt-up
+while the static book stays pinned at 40%.
+
+**This is the culmination of the whole investigation.** Direction is not
+forecastable (13 method families); an engine that cannot time is left delivering
+beta; and a static beta position delivers it more cheaply and with less drawdown.
+
+### Third instance of the silent-truncation bug
+
+`fetchCandlesFrom` breaks its pagination loop on an empty page, which is
+indistinguishable from a throttle, and paces nothing. Across a 263-page walk this
+truncated at a different point each run: consecutive runs disagreed on bucket
+membership and on the parabolic bucket's engine return (+68.3% vs +104.7%), and
+BTC was silently dropped entirely from every early run.
+
+Fixed with `server/scripts/lib/historyCache.ts` — paced, retries empty pages
+before believing them, verifies hourly contiguity, and caches to disk so reruns
+are byte-identical. All five assets now load 26,280 bars at 100.0% coverage and
+two consecutive runs agree exactly.
+
+**Production is not materially affected:** `publicGet` throws on 429, so live
+paths fail loudly, and they paginate only 2–4 pages. The defect bit the deep
+historical walk, not the trading engine.
