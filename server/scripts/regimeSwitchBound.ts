@@ -50,6 +50,12 @@ const FEE = parseFloat(arg("fee-bps") ?? "10") / 10000;
 /** Bars of future used to LABEL the regime. 168 = one week at 1h. */
 const HORIZON = parseInt(arg("horizon") ?? "168");
 const JSON_OUT = arg("json") ?? null;
+/**
+ * Pin the asset list. Selection by live 24h volume shifts between runs, so two
+ * scripts run minutes apart can score different samples — which silently made
+ * an oracle bound and a classifier table non-comparable.
+ */
+const PAIRS_ARG = arg("pairs");
 
 const SEED = 10000;
 const H0 = Date.parse("2026-02-15T00:00:00Z");
@@ -140,7 +146,9 @@ async function main() {
   const t = await okx.publicGet<{ instId: string; volCcy24h: string }>("/api/v5/market/tickers?instType=SPOT");
   const rank = t.filter((x) => x.instId.endsWith("-USDT"))
     .sort((a, b) => parseFloat(b.volCcy24h || "0") - parseFloat(a.volCcy24h || "0")).map((x) => x.instId);
-  const cands = [ANCHOR, ...rank.filter((p) => p !== ANCHOR)].slice(0, TOP_N * 3);
+  const cands = PAIRS_ARG
+    ? PAIRS_ARG.split(",").map((x) => x.trim())
+    : [ANCHOR, ...rank.filter((p) => p !== ANCHOR)].slice(0, TOP_N * 3);
 
   const sel: Array<{ id: string; c: CandleData[] }> = [];
   for (const id of cands) {
