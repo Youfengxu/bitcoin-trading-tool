@@ -61,7 +61,20 @@ const LOOKBACK = 30; // bars for rolling z-scores
 
 const SEED = 10000;
 const SPLIT = Date.parse("2026-05-15T00:00:00Z");
-const CCYS = ["BTC", "ETH", "SOL", "XRP", "DOGE", "LINK"];
+const HOURLY = process.argv.includes("--hourly");
+/**
+ * Hourly mode tests on assets that REVERSED DIRECTION inside the 30-day hourly
+ * window, splitting each at its own turning point. That yields two genuine
+ * sub-regimes per asset from data that exists today — 720 bars rather than the
+ * ~60 daily bars that made the first run inconclusive — without waiting for the
+ * market to provide a regime change on BTC's schedule.
+ *
+ * These reversals are idiosyncratic, which is a feature: a signal that only
+ * works when everything moves together has not been tested.
+ */
+const CCYS = HOURLY
+  ? ["UNI", "ZEC", "WLD", "HYPE", "BTC"]           // 4 reversals + BTC as control
+  : ["BTC", "ETH", "SOL", "XRP", "DOGE", "LINK"];
 
 interface Bar {
   ts: number;
@@ -81,17 +94,20 @@ const z = (series: number[], v: number) => {
 };
 
 async function loadAsset(ccy: string): Promise<Bar[] | null> {
-  const q = `ccy=${ccy}&period=1D`;
+  const period = HOURLY ? "1H" : "1D";
+  const q = `ccy=${ccy}&period=${period}`;
   const [oiRows, lsRows, tvRows, candles, funding] = await Promise.all([
     okx.publicGet<string[]>(`/api/v5/rubik/stat/contracts/open-interest-volume?${q}`).catch(() => []),
     okx.publicGet<string[]>(`/api/v5/rubik/stat/contracts/long-short-account-ratio?${q}`).catch(() => []),
     okx.publicGet<string[]>(`/api/v5/rubik/stat/taker-volume?${q}&instType=CONTRACTS`).catch(() => []),
-    okx.fetchCandles("1d", 300, `${ccy}-USDT`).catch(() => []),
+    okx.fetchCandles(HOURLY ? "1h" : "1d", HOURLY ? 750 : 300, `${ccy}-USDT`).catch(() => []),
     fetchFundingDaily(`${ccy}-USDT-SWAP`),
   ]);
   if (!oiRows.length || !lsRows.length || !candles.length) return null;
 
-  const day = (ts: number) => new Date(ts).toISOString().slice(0, 10);
+  const day = (ts: number) => HOURLY
+    ? String(Math.floor(ts / 3600_000) * 3600_000)
+    : new Date(ts).toISOString().slice(0, 10);
   const oi = new Map(oiRows.map((r) => [day(parseInt(r[0])), parseFloat(r[1])]));
   const ls = new Map(lsRows.map((r) => [day(parseInt(r[0])), parseFloat(r[1])]));
   const tv = new Map(tvRows.map((r) => [day(parseInt(r[0])), [parseFloat(r[1]), parseFloat(r[2])]]));
@@ -230,6 +246,44 @@ async function main() {
     else console.log(`  skipped ${ccy} (${bars?.length ?? 0} usable bars)`);
   }
   console.log(`\n${assets.length} assets: ${assets.map((a) => `${a.ccy}(${a.bars.length}d)`).join(", ")}`);
+
+  if (HOURLY) {
+    console.log("\nSplit at each asset's own turning point — the extremum separating its two regimes.\n");
+    console.log("ccy".padEnd(7) + "half".padEnd(14) + pad("bars", 6) + pad("return", 10) +
+                pad("buy&hold", 11) + pad("expo", 7) + pad("blend", 10) + pad("ALPHA", 10) + pad("trades", 8));
+    console.log("─".repeat(92));
+    let posBoth = 0, tested = 0;
+    for (const { ccy, bars } of assets) {
+      const px = bars.map((b) => b.close);
+      const mid = Math.floor(px.length / 2);
+      const h1 = (px[mid] - px[0]) / px[0];
+      // Turning point: the peak if it rose then fell, the trough if the reverse.
+      const rising = h1 > 0;
+      let turn = LOOKBACK + 10;
+      let best = rising ? -Infinity : Infinity;
+      for (let i = LOOKBACK + 10; i < px.length - 60; i++) {
+        if (rising ? px[i] > best : px[i] < best) { best = px[i]; turn = i; }
+      }
+      const segs: Array<[string, number, number]> = [
+        [rising ? "1 up" : "1 down", LOOKBACK, turn],
+        [rising ? "2 down" : "2 up", turn, bars.length - 1],
+      ];
+      let alphas: number[] = [];
+      for (const [name, a, b] of segs) {
+        const r = run(bars, a, b);
+        if (!r) continue;
+        alphas.push(r.alpha);
+        console.log(ccy.padEnd(7) + name.padEnd(14) + pad(r.bars, 6) + pad(pct(r.ret), 10) +
+          pad(pct(r.buyHold), 11) + pad(`${(r.expo * 100).toFixed(0)}%`, 7) +
+          pad(pct(r.blend), 10) + pad(pct(r.alpha), 10) + pad(r.trades, 8));
+      }
+      if (alphas.length === 2) { tested++; if (alphas.every((a) => a > 0)) posBoth++; }
+    }
+    console.log("─".repeat(92));
+    console.log(`\nPositive alpha in BOTH of its own regimes: ${posBoth}/${tested} assets`);
+    console.log("Each asset is its own controlled experiment: same asset, same signal, opposite regimes.\n");
+    return;
+  }
 
   const report: Record<string, Res[]> = {};
   for (const [label, lo, hi] of [
