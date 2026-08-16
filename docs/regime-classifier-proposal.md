@@ -298,3 +298,54 @@ switching prize — real as it is — would be unreachable.
 Steps 1–3 need no new data and reuse the harness already in place. If all three
 fail, that is a well-evidenced answer and the strategy stays what it demonstrably
 is: a drawdown-reduction tool.
+
+---
+
+## 0c. Exit policy — the lead that looked real and was not
+
+`tradeAnatomy.ts` established a genuine structural fact that still stands:
+
+- **Win rate is immovable.** 39.8%–46.8% across eight exit rules, both windows.
+  It is pinned by the entry signal, whose directional accuracy is at chance.
+- **Payoff ratio is highly movable.** 0.90 → 2.37 on identical entries.
+
+Three exit rules improved *both* regime windows — the first result in the project
+to do so. `exitPolicyValidation.ts` then swept a 7×7 stop/trail grid and ran an
+anchored walk-forward against pre-registered criteria:
+
+| criterion | result |
+|---|---|
+| 1. plateau, not spike | **PASS** (13/49 top quartile, broad contiguous region) |
+| 2. train rank predicts test rank | **FAIL** (Spearman ρ = **−0.339**) |
+| 3. walk-forward beats current policy | **FAIL** (−4.1pp) |
+| 4. better in both windows | PASS (31/49) |
+
+The decisive number is the fixed-parameter test, which selects nothing and so
+has nothing to overfit: scored on the held-out folds, **2 of 49 cells beat the
+current policy (4%)**, and the median cell returns −4.6% against current's −1.8%.
+
+### The methodological lesson, which is the more valuable output
+
+The full-period sweep says 31/49 rules beat current in both windows. The held-out
+folds say 2/49. Both are correct, and the contradiction is the finding:
+
+**"improves in both regime windows" is not an out-of-sample test.** Both windows
+are in-sample — they partition the same data any parameter choice was informed
+by. That bar has been treated as the gold standard throughout this project. It
+was only ever used to *reject* candidates, so it never let a false positive reach
+production, but the one time something passed it, a genuinely held-out test
+killed it.
+
+ρ = −0.339 is the sharpest statement of the result: parameters that performed
+best on history performed *worse than average* on the next fold. Not uncorrelated
+— anticorrelated. Chasing the optimum is worse than picking blindly.
+
+**Exit-policy tuning is closed.** Thirteen method families now.
+
+### Determinism defect found and fixed here
+
+The first two runs of the validation disagreed on the sign of ρ (−0.339 vs
++0.150) because fold boundaries were derived from live array length, which grows
+as new candles arrive. Same defect class as the `Date.now()` window bug recorded
+earlier. Fixed by truncating to a pinned `END` timestamp; two consecutive runs
+now agree exactly. **Neither pre-fix reading should be cited.**
