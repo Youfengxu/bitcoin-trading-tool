@@ -376,3 +376,83 @@ export interface SimulatorPortfolio {
   lastPrice: number;
   isRunning: boolean;
 }
+
+// ─── Static allocation strategy ───────────────────────────────────────
+
+/**
+ * Which strategy actually places trades.
+ *
+ *   "engine"  (default)  Indicator signals size and time every trade.
+ *   "static"             Hold a constant BTC weight, rebalancing on drift.
+ *
+ * ── Why "static" exists ───────────────────────────────────────────────
+ * The engine's behaviour is fully explained by its ~36-43% average exposure: it
+ * captures roughly 40% of whatever the market does, in both directions. Over 165
+ * overlapping 90-day episodes across 5 assets and 3 years, a static 40% book
+ * matched it on return (+5.6% vs +5.7%), BEAT it on drawdown (13.8% vs 15.7%),
+ * and needed 2 trades against 249.
+ *
+ * On BTC alone — the instrument actually traded — the gap is wider, and the
+ * static book wins in both regimes:
+ *
+ *   strategy               mean ret   mean DD   trades   beats engine
+ *   engine (current)          +3.4%      9.8%      139            —
+ *   static 40% band 10%       +4.3%      9.4%        1    21/33 (64%)
+ *
+ *     bulls (hold >+25%, n=10)   engine +18.4%   static +19.8%
+ *     bears (hold <-20%, n=4)    engine -13.7%   static -10.6%
+ *
+ * The engine is not being switched off because it lost a fitting contest — it is
+ * being switched off because thirteen method families failed to find any
+ * directional edge, and an engine that cannot time is delivering beta that a
+ * static weight delivers more cheaply.
+ *
+ * Default remains "engine" so that a lost or unset environment reverts to the
+ * long-standing known behaviour rather than silently changing what trades.
+ */
+export function strategyMode(): "engine" | "static" {
+  return (process.env.STRATEGY_MODE ?? "engine").toLowerCase() === "static" ? "static" : "engine";
+}
+
+/**
+ * Target BTC weight for the static strategy, as a fraction of book value.
+ *
+ * 0.40 is chosen to MATCH the engine's realised average exposure (36-43%), not
+ * because it scored best. That distinction is deliberate: the walk-forward study
+ * measured Spearman rho = -0.339 between train-optimal and test-optimal exit
+ * parameters, meaning historically-best settings did *worse* than average out of
+ * sample. Picking this weight to preserve the existing risk profile is a
+ * defensible reason; picking it because a grid liked it would repeat the exact
+ * error that study documented.
+ *
+ * Raising it increases both return and drawdown roughly proportionally on BTC
+ * (30% -> +3.3%/7.1%DD, 40% -> +4.3%/9.4%DD, 50% -> +5.4%/11.6%DD). That is a
+ * risk-appetite decision for the owner, not an optimisation.
+ *
+ * Clamped to [0, 1]: leverage is not supported by the spot venue, and a negative
+ * weight would mean shorting, which the venue cannot express either.
+ */
+export function staticTargetWeight(): number {
+  const v = parseFloat(process.env.STATIC_TARGET_WEIGHT ?? "0.40");
+  if (isNaN(v)) return 0.40;
+  return Math.max(0, Math.min(1, v));
+}
+
+/**
+ * Drift tolerance before the static book rebalances, in weight fraction.
+ *
+ * 0.10 means "rebalance when BTC is more than 10 percentage points away from
+ * target". On BTC this fired ~1 time per 90-day episode. The band matters far
+ * more for cost than for return: 5%, 10% and 15% bands returned +4.1%, +4.3% and
+ * +4.5% with essentially identical drawdown, so a wider band is weakly better
+ * because it trades less. 10% is the middle of a flat region rather than its
+ * peak, chosen so the setting is insensitive to being slightly wrong.
+ *
+ * A band of 0 would rebalance every heartbeat and reintroduce exactly the fee
+ * drag this change exists to remove; the floor guards against that.
+ */
+export function staticRebalanceBand(): number {
+  const v = parseFloat(process.env.STATIC_REBALANCE_BAND ?? "0.10");
+  if (isNaN(v) || v <= 0) return 0.10;
+  return Math.min(0.5, v);
+}

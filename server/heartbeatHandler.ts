@@ -24,10 +24,13 @@ import {
   deriveChallengerParams,
   OPPORTUNITY_COST_LAMBDA,
   HOLD_NOISE_THRESHOLD,
+  strategyMode,
+  staticTargetWeight,
+  staticRebalanceBand,
 } from "../shared/tradingTypes";
 import { notifyOwner } from "./_core/notification";
 import { applyExternalModifiers, signalFromScores, type ExternalSignals } from "./engine/externalModifiers";
-import { executeSignalTrade, getRealVenue } from "./engine/executionVenue";
+import { executeSignalTrade, executeRebalance, getRealVenue, type Fill } from "./engine/executionVenue";
 import { collectPositioning } from "./engine/positioningCollector";
 import * as db from "./db";
 
@@ -72,6 +75,54 @@ export function utcWeekKey(d: Date): string {
  * @param currentPrice  Latest BTC price (for funding divergence near-high check)
  * @param candles       Recent 1h candles (used to compute rolling 14d high)
  */
+/**
+ * Sends a trade announcement to the owner and to Telegram.
+ *
+ * Extracted so the signal path and the static-rebalance path cannot drift apart
+ * in what they report — the same reason executionVenue.ts exists for the ledger
+ * arithmetic. Neither channel is allowed to throw: a notification failure must
+ * never abort a heartbeat that has already moved the book.
+ *
+ * Telegram uses HTML parse mode because reasoning text contains [RSI], [MACD]
+ * and similar, and bare square brackets are link syntax in Markdown — which
+ * silently dropped messages before. Callers must escape < > & in any free text
+ * they interpolate.
+ */
+async function announceTrade(opts: {
+  title: string;
+  content: string;
+  telegramHtml: string;
+  logLabel: string;
+}): Promise<void> {
+  try {
+    await notifyOwner({ title: opts.title, content: opts.content });
+  } catch (e) {
+    console.warn("[Heartbeat] Notification failed:", e);
+  }
+
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  if (!token || !chatId) {
+    console.log("[Heartbeat] Telegram skipped — TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set.");
+    return;
+  }
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text: opts.telegramHtml, parse_mode: "HTML" }),
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      console.warn(`[Heartbeat] Telegram rejected message (${res.status}): ${detail}`);
+    } else {
+      console.log(`[Heartbeat] Telegram notified: ${opts.logLabel}`);
+    }
+  } catch (e) {
+    console.warn("[Heartbeat] Telegram failed:", e);
+  }
+}
+
 export async function fetchExternalSignals(
   currentPrice: number,
   candles: { close: number }[],
@@ -402,7 +453,57 @@ async function runSignalGeneration(candleInterval = "1h") {
       console.log(`[Heartbeat] Signal ${signal.signal.toUpperCase()} awaiting confirmation (1/2)`);
     }
 
-    if (confirmed && signal.signal !== "hold") {
+    const describe = (label: string, f: Fill | null) =>
+      f
+        ? `${label} ${f.action.toUpperCase()} ${f.btcAmount.toFixed(8)} BTC ` +
+          `@ $${f.price.toFixed(2)} (fee $${f.feeUsd.toFixed(4)})`
+        : `${label} no fill`;
+
+    // ── What actually trades ───────────────────────────────────────────
+    // In "static" mode the signals above are still computed, recorded and shown
+    // — they remain the analysis stream, and the champion/challenger comparison
+    // keeps accumulating — but they no longer move the book. A constant weight
+    // does, because thirteen method families failed to find directional edge and
+    // the engine's results were fully explained by its ~40% average exposure.
+    // See shared/tradingTypes.ts strategyMode() for the evidence.
+    if (strategyMode() === "static") {
+      const { paper, real, skipped } = await executeRebalance({
+        price: metrics.price,
+        reasoning:
+          `Static allocation: rebalance toward ${(staticTargetWeight() * 100).toFixed(0)}% BTC ` +
+          `(band ${(staticRebalanceBand() * 100).toFixed(0)}pp). ` +
+          `Concurrent engine signal was ${signal.signal.toUpperCase()} at ` +
+          `${(signal.confidence * 100).toFixed(0)}% confidence, not acted on.`,
+        ts,
+      });
+
+      if (paper || real) {
+        const parts = [describe("paper", paper)];
+        if (getRealVenue()) parts.push(describe(getRealVenue()!.name, real));
+        console.log(`[Heartbeat] REBALANCE  ${parts.join("  |  ")}`);
+
+        const simState = await db.getSimulatorState();
+        const fill = paper ?? real!;
+        await announceTrade({
+          title: `BTC Rebalance ${fill.action.toUpperCase()} @ $${metrics.price.toFixed(0)}`,
+          content:
+            `Static allocation rebalance\nAction: ${fill.action.toUpperCase()}\n` +
+            `Amount: ${fill.btcAmount.toFixed(8)} BTC ($${fill.usdValue.toFixed(2)})\n` +
+            `Price: $${metrics.price.toFixed(2)}\n` +
+            `Target weight: ${(staticTargetWeight() * 100).toFixed(0)}%\n` +
+            `Portfolio Value: $${simState?.totalValueUsd?.toFixed(2) ?? "N/A"}`,
+          telegramHtml:
+            `⚖️ <b>BTC Rebalance — ${fill.action.toUpperCase()}</b>\n\n` +
+            `💰 Price: $${metrics.price.toFixed(2)}\n` +
+            `📦 Amount: ${fill.btcAmount.toFixed(8)} BTC ($${fill.usdValue.toFixed(2)})\n` +
+            `🎯 Target: ${(staticTargetWeight() * 100).toFixed(0)}% BTC\n` +
+            `💼 Portfolio: $${simState?.totalValueUsd?.toFixed(2) ?? "N/A"}`,
+          logLabel: `rebalance ${fill.action.toUpperCase()}`,
+        });
+      } else if (skipped !== "within-band") {
+        console.log(`[Heartbeat] rebalance not executed (${skipped ?? "no fill"})`);
+      }
+    } else if (confirmed && signal.signal !== "hold") {
       // Records to the paper ledger always, and to OKX as well when configured.
       // In lockstep mode a failed OKX order skips the paper book too, so the two
       // curves only ever differ by execution quality. See engine/executionVenue.ts.
@@ -416,11 +517,6 @@ async function runSignalGeneration(candleInterval = "1h") {
         signalId: signalId ?? undefined,
         ts,
       });
-      const describe = (label: string, f: typeof paper) =>
-        f
-          ? `${label} ${f.action.toUpperCase()} ${f.btcAmount.toFixed(8)} BTC ` +
-            `@ $${f.price.toFixed(2)} (fee $${f.feeUsd.toFixed(4)})`
-          : `${label} no fill`;
 
       if (paper || real) {
         const parts = [describe("paper", paper)];
@@ -433,62 +529,32 @@ async function runSignalGeneration(candleInterval = "1h") {
         );
       }
 
-      // Notify
       const simState = await db.getSimulatorState();
-      try {
-        await notifyOwner({
-          title: `BTC ${signal.signal.toUpperCase()} Signal @ $${metrics.price.toFixed(0)}`,
-          content: `Signal: ${signal.signal.toUpperCase()}\nPrice: $${metrics.price.toFixed(2)}\nConfidence: ${(signal.confidence * 100).toFixed(0)}%\nPortfolio Value: $${simState?.totalValueUsd?.toFixed(2) ?? "N/A"}\n\nReasoning:\n${signal.reasoning}`,
-        });
-      } catch (e) {
-        console.warn("[Heartbeat] Notification failed:", e);
-      }
-
-      // Telegram
-      const token = process.env.TELEGRAM_BOT_TOKEN;
-      const chatId = process.env.TELEGRAM_CHAT_ID;
-      if (token && chatId) {
-        try {
-          // Use HTML parse mode — the reasoning text contains [RSI], [MACD], etc. which
-          // break Telegram's Markdown parser (bare square brackets are link syntax in Markdown).
-          // HTML mode only interprets explicit <b>, <i>, <code> tags and is safe with
-          // arbitrary text as long as we escape < > & in the reasoning body.
-          const escapeHtml = (s: string) =>
-            s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-
-          const emoji = signal.signal === "buy" ? "🟢" : "🔴";
-          const reasoning = escapeHtml(signal.reasoning.substring(0, 500));
-          const modLine = championMods.length > 0
-            ? `\n🔧 <b>Modifiers:</b> <code>${escapeHtml(championMods.join("  "))}</code>\n`
-            : "";
-          const msg =
-            `${emoji} <b>BTC ${signal.signal.toUpperCase()} Signal</b>\n\n` +
-            `💰 Price: $${metrics.price.toFixed(2)}\n` +
-            `📊 Confidence: ${(signal.confidence * 100).toFixed(0)}%\n` +
-            `💼 Portfolio: $${simState?.totalValueUsd?.toFixed(2) ?? "N/A"}\n` +
-            modLine +
-            `\n📝 <b>Reasoning:</b>\n<code>${reasoning}</code>`;
-
-          const tgRes = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML" }),
-          });
-          if (!tgRes.ok) {
-            const detail = await tgRes.text().catch(() => "");
-            console.warn(`[Heartbeat] Telegram rejected message (${tgRes.status}): ${detail}`);
-          } else {
-            console.log(`[Heartbeat] Telegram notified: ${signal.signal.toUpperCase()} @ $${metrics.price.toFixed(0)}`);
-          }
-        } catch (e) {
-          console.warn("[Heartbeat] Telegram failed:", e);
-        }
-      } else {
-        console.log("[Heartbeat] Telegram skipped — TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set.");
-      }
+      const escapeHtml = (s: string) =>
+        s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const emoji = signal.signal === "buy" ? "🟢" : "🔴";
+      const modLine = championMods.length > 0
+        ? `\n🔧 <b>Modifiers:</b> <code>${escapeHtml(championMods.join("  "))}</code>\n`
+        : "";
+      await announceTrade({
+        title: `BTC ${signal.signal.toUpperCase()} Signal @ $${metrics.price.toFixed(0)}`,
+        content: `Signal: ${signal.signal.toUpperCase()}\nPrice: $${metrics.price.toFixed(2)}\nConfidence: ${(signal.confidence * 100).toFixed(0)}%\nPortfolio Value: $${simState?.totalValueUsd?.toFixed(2) ?? "N/A"}\n\nReasoning:\n${signal.reasoning}`,
+        telegramHtml:
+          `${emoji} <b>BTC ${signal.signal.toUpperCase()} Signal</b>\n\n` +
+          `💰 Price: $${metrics.price.toFixed(2)}\n` +
+          `📊 Confidence: ${(signal.confidence * 100).toFixed(0)}%\n` +
+          `💼 Portfolio: $${simState?.totalValueUsd?.toFixed(2) ?? "N/A"}\n` +
+          modLine +
+          `\n📝 <b>Reasoning:</b>\n<code>${escapeHtml(signal.reasoning.substring(0, 500))}</code>`,
+        logLabel: `${signal.signal.toUpperCase()} @ $${metrics.price.toFixed(0)}`,
+      });
     }
 
-    console.log(`[Heartbeat] Champion: ${signal.signal} @ $${metrics.price.toFixed(2)} (confidence: ${(signal.confidence * 100).toFixed(0)}%)`);
+    console.log(
+      `[Heartbeat] Champion: ${signal.signal} @ $${metrics.price.toFixed(2)} ` +
+      `(confidence: ${(signal.confidence * 100).toFixed(0)}%)` +
+      (strategyMode() === "static" ? " [advisory only — static allocation is trading]" : "")
+    );
   } catch (error) {
     console.error("[Heartbeat] Signal generation failed:", error);
   }

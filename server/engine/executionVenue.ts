@@ -46,6 +46,8 @@ import {
   tradeCooldownBars,
   MIN_TRADE_NOTIONAL_USD,
   convictionScaledFraction,
+  staticTargetWeight,
+  staticRebalanceBand,
 } from "../../shared/tradingTypes";
 
 /**
@@ -600,9 +602,28 @@ export async function executeSignalTrade(opts: {
   // rejected, undersized or unfilled OKX order means neither book moves. The
   // difference between the two curves is then purely execution quality —
   // slippage and fees — rather than trades reality never took.
+  const planSize: PlanSize = (h) =>
+    action === "buy"
+      ? { action: "buy", usdAmount: h.cashUsd * fraction }
+      : { action: "sell", btcAmount: h.btcHolding * fraction };
+
+  return runOnBothBooks(real, opts, ts, planSize);
+}
+
+/**
+ * Runs one sizing rule against the real venue (if configured) and then the paper
+ * ledger, preserving lockstep: if the real venue does not fill, the paper book
+ * skips too, so the two books never diverge by trades reality never took.
+ */
+async function runOnBothBooks(
+  real: ExecutionVenue | null,
+  opts: { price: number; reasoning?: string; signalId?: number },
+  ts: number,
+  planSize: PlanSize
+): Promise<{ paper: Fill | null; real: Fill | null }> {
   let realFill: Fill | null = null;
   if (real) {
-    realFill = await executeOnVenue(real, real.name, opts, ts, fraction);
+    realFill = await executeOnVenue(real, real.name, opts, ts, planSize);
     if (!realFill) {
       console.warn(
         `[ExecutionVenue] ${real.name} did not fill — paper book skipped too (lockstep).`
@@ -615,32 +636,134 @@ export async function executeSignalTrade(opts: {
   // Always runs: it is the analysis baseline. It executes at the reference
   // price with its own fee assumption, deliberately NOT the venue's fill price,
   // so the gap between the books measures execution cost.
-  const paperFill = await executeOnVenue(new InternalVenue(), db.INTERNAL_VENUE, opts, ts, fraction);
+  const paperFill = await executeOnVenue(new InternalVenue(), db.INTERNAL_VENUE, opts, ts, planSize);
 
   return { paper: paperFill, real: realFill };
 }
 
 /**
+ * The rebalance trade for one book, or null to do nothing. Pure — no I/O, no
+ * environment reads — so the arithmetic that decides how much real money moves
+ * is directly testable.
+ *
+ * Returns null when the book is already inside the band, when it is empty, or
+ * when the required trade is below the dust floor (where the fee would outweigh
+ * the tracking benefit and OKX would likely reject the order anyway).
+ */
+export function planRebalance(
+  holdings: VenueSnapshot,
+  price: number,
+  target: number,
+  band: number
+): TradePlan | null {
+  if (price <= 0) return null;
+  const total = holdings.cashUsd + holdings.btcHolding * price;
+  if (total <= 0) return null;
+
+  const current = (holdings.btcHolding * price) / total;
+  if (Math.abs(target - current) <= band) return null;
+
+  const deltaBtc = (target * total) / price - holdings.btcHolding;
+  const notional = Math.abs(deltaBtc) * price;
+  if (notional < MIN_TRADE_NOTIONAL_USD) return null;
+
+  return deltaBtc > 0
+    ? { action: "buy", usdAmount: notional }
+    : { action: "sell", btcAmount: -deltaBtc };
+}
+
+/**
+ * Rebalances every book toward the static target weight.
+ *
+ * Each book rebalances against its OWN total value, so the allocated OKX book
+ * and the paper book both land on the target weight despite holding different
+ * absolute amounts. That keeps them comparable in the only terms that matter
+ * here — weight — while preserving the execution-quality gap between them.
+ *
+ * The band is checked per book rather than once against the paper ledger. A
+ * shared gate would be wrong here in a way it is not for signals: signals are a
+ * property of the market and belong to the strategy, whereas drift is a property
+ * of a particular book's holdings. Gating the OKX book on the paper book's drift
+ * would leave it un-rebalanced whenever the two had drifted apart, which is
+ * precisely when it needs rebalancing.
+ *
+ * The minimum-notional and cooldown gates that guard the signal path are NOT
+ * applied. The dust floor is enforced inside the plan (a sub-minimum rebalance
+ * is simply not worth doing and returns null), and a cooldown is meaningless for
+ * a rule that already trades about once a quarter.
+ */
+export async function executeRebalance(opts: {
+  price: number;
+  targetWeight?: number;
+  band?: number;
+  reasoning?: string;
+  ts?: number;
+}): Promise<{ paper: Fill | null; real: Fill | null; skipped?: string }> {
+  const ts = opts.ts ?? Date.now();
+  const price = opts.price;
+  const target = opts.targetWeight ?? staticTargetWeight();
+  const band = opts.band ?? staticRebalanceBand();
+  if (price <= 0) return { paper: null, real: null, skipped: "no-price" };
+
+  const planSize: PlanSize = (h, px) => planRebalance(h, px, target, band);
+
+  const paperState = await db.getSimulatorState(db.INTERNAL_VENUE);
+  if (paperState) {
+    const total = paperState.cashUsd + paperState.btcHolding * price;
+    const current = total > 0 ? (paperState.btcHolding * price) / total : 0;
+    if (Math.abs(target - current) <= band) {
+      console.log(
+        `[ExecutionVenue] rebalance not needed — BTC weight ${(current * 100).toFixed(1)}% ` +
+        `is within ${(band * 100).toFixed(0)}pp of the ${(target * 100).toFixed(0)}% target`
+      );
+      return { paper: null, real: null, skipped: "within-band" };
+    }
+    console.log(
+      `[ExecutionVenue] rebalancing — BTC weight ${(current * 100).toFixed(1)}% ` +
+      `→ ${(target * 100).toFixed(0)}% target`
+    );
+  }
+
+  return runOnBothBooks(getRealVenue(), { price, reasoning: opts.reasoning }, ts, planSize);
+}
+
+/**
+ * A concrete order, already sized against one book's holdings. Buys are sized in
+ * quote currency and sells in base, mirroring how OKX accepts spot market orders.
+ */
+export type TradePlan =
+  | { action: "buy"; usdAmount: number }
+  | { action: "sell"; btcAmount: number };
+
+/**
+ * Turns one book's holdings into an order, or null to trade nothing.
+ *
+ * Sizing is a function of the book rather than a fixed amount because each book
+ * sizes against its OWN holdings — that is what lets the paper and OKX ledgers
+ * drift apart and makes the gap between them a measurement of execution quality.
+ * Routing both the signal path and the rebalance path through this one seam is
+ * deliberate: the duplication it replaces is exactly the drift this module was
+ * created to stop (see the header).
+ */
+type PlanSize = (holdings: VenueSnapshot, price: number) => TradePlan | null;
+
+/**
  * Sizes and executes against one venue, then records the result under that
- * venue's book. Sizing is unchanged from the original inline implementations:
- * a buy spends `maxPositionPct` of available cash, a sell disposes of
- * `maxPositionPct` of BTC held — each measured against that venue's own
- * holdings, so the two books size independently as they drift apart.
+ * venue's book. The caller supplies the sizing rule; everything downstream —
+ * ledger arithmetic, state update, trade record — is shared.
  */
 async function executeOnVenue(
   venue: ExecutionVenue,
   bookName: string,
   opts: {
-    action: "buy" | "sell";
     price: number;
-    params: StrategyParameters;
     reasoning?: string;
     signalId?: number;
   },
   ts: number,
-  fraction: number
+  planSize: PlanSize
 ): Promise<Fill | null> {
-  const { action, price, reasoning, signalId } = opts;
+  const { price, reasoning, signalId } = opts;
 
   let state = await db.getSimulatorState(bookName);
   if (!state) state = (await db.initSimulatorState(bookName)) ?? null;
@@ -655,13 +778,17 @@ async function executeOnVenue(
     ? { cashUsd: state.cashUsd, btcHolding: state.btcHolding }
     : (await venue.snapshot()) ?? { cashUsd: state.cashUsd, btcHolding: state.btcHolding };
 
+  const plan = planSize(holdings, price);
+  if (!plan) return null;
+  const action = plan.action;
+
   let fill: Fill | null = null;
-  if (action === "buy") {
-    if (holdings.cashUsd <= 0) return null;
-    fill = await venue.buy(holdings.cashUsd * fraction, price);
+  if (plan.action === "buy") {
+    if (holdings.cashUsd <= 0 || plan.usdAmount <= 0) return null;
+    fill = await venue.buy(Math.min(plan.usdAmount, holdings.cashUsd), price);
   } else {
-    if (holdings.btcHolding <= 0) return null;
-    fill = await venue.sell(holdings.btcHolding * fraction, price);
+    if (holdings.btcHolding <= 0 || plan.btcAmount <= 0) return null;
+    fill = await venue.sell(Math.min(plan.btcAmount, holdings.btcHolding), price);
   }
   if (!fill) return null;
 

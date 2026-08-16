@@ -69,6 +69,12 @@ services:
       OPTIMIZER_FEE_BPS: ${OPTIMIZER_FEE_BPS:-10}
       OKX_BOOK_CAPITAL_SGD: ${OKX_BOOK_CAPITAL_SGD:-0}
       TRADE_COOLDOWN_BARS: ${TRADE_COOLDOWN_BARS:-12}
+      # Which strategy places trades. "engine" = indicator signals (long-standing
+      # behaviour, and the default so a missing .env cannot silently change what
+      # trades). "static" = hold a constant BTC weight, rebalancing on drift.
+      STRATEGY_MODE: ${STRATEGY_MODE:-engine}
+      STATIC_TARGET_WEIGHT: ${STATIC_TARGET_WEIGHT:-0.40}
+      STATIC_REBALANCE_BAND: ${STATIC_REBALANCE_BAND:-0.10}
       POSITIONING_CCYS: ${POSITIONING_CCYS:-BTC,ETH,SOL,XRP,DOGE,LINK,AVAX,BNB,TRX,UNI,SUI,FIL,BCH,NEAR,ZEC,PEPE,WLD,HYPE,OKB,ETHFI}
     ports:
       - "127.0.0.1:${APP_PORT:-3002}:3000"

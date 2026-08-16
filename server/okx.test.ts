@@ -16,13 +16,16 @@ import {
   roundQuote,
   getOkxConfig,
 } from "./engine/okxClient";
-import { getExecutionVenue, resetExecutionVenue } from "./engine/executionVenue";
+import { getExecutionVenue, resetExecutionVenue, planRebalance } from "./engine/executionVenue";
 import {
   convictionScaledFraction,
   TRADE_COOLDOWN_BARS,
   MIN_TRADE_NOTIONAL_USD,
   CONVICTION_SIZE_MIN_MULT,
   CONVICTION_SIZE_MAX_MULT,
+  strategyMode,
+  staticTargetWeight,
+  staticRebalanceBand,
 } from "../shared/tradingTypes";
 
 // ─── Signing ──────────────────────────────────────────────────────────
@@ -268,5 +271,103 @@ describe("Turnover control constants", () => {
   it("multipliers bracket 1.0 so average size is near the base position", () => {
     expect(CONVICTION_SIZE_MIN_MULT).toBeLessThan(1);
     expect(CONVICTION_SIZE_MAX_MULT).toBeGreaterThan(1);
+  });
+});
+
+// ─── Static allocation rebalancing ────────────────────────────────────
+
+describe("static allocation config", () => {
+  const saved = { ...process.env };
+  afterEach(() => { process.env = { ...saved }; });
+
+  it("defaults to the engine so a lost env does not silently change what trades", () => {
+    delete process.env.STRATEGY_MODE;
+    expect(strategyMode()).toBe("engine");
+  });
+
+  it("only switches to static on an exact opt-in", () => {
+    process.env.STRATEGY_MODE = "static";
+    expect(strategyMode()).toBe("static");
+    process.env.STRATEGY_MODE = "STATIC";
+    expect(strategyMode()).toBe("static");
+    process.env.STRATEGY_MODE = "statik";
+    expect(strategyMode()).toBe("engine");
+  });
+
+  it("clamps the target weight to [0,1] — the spot venue cannot lever or short", () => {
+    process.env.STATIC_TARGET_WEIGHT = "1.8";
+    expect(staticTargetWeight()).toBe(1);
+    process.env.STATIC_TARGET_WEIGHT = "-0.3";
+    expect(staticTargetWeight()).toBe(0);
+    process.env.STATIC_TARGET_WEIGHT = "garbage";
+    expect(staticTargetWeight()).toBeCloseTo(0.40, 10);
+  });
+
+  it("never allows a zero band, which would rebalance every heartbeat", () => {
+    process.env.STATIC_REBALANCE_BAND = "0";
+    expect(staticRebalanceBand()).toBeCloseTo(0.10, 10);
+    process.env.STATIC_REBALANCE_BAND = "-1";
+    expect(staticRebalanceBand()).toBeCloseTo(0.10, 10);
+  });
+});
+
+describe("planRebalance", () => {
+  const PX = 100_000;
+  /** A book worth $10,000 total at the given BTC weight. */
+  const bookAt = (weight: number, total = 10_000) => ({
+    cashUsd: total * (1 - weight),
+    btcHolding: (total * weight) / PX,
+  });
+
+  it("does nothing inside the band", () => {
+    expect(planRebalance(bookAt(0.45), PX, 0.40, 0.10)).toBeNull();
+    expect(planRebalance(bookAt(0.31), PX, 0.40, 0.10)).toBeNull();
+  });
+
+  it("sells down to target when overweight beyond the band", () => {
+    const plan = planRebalance(bookAt(0.80), PX, 0.40, 0.10);
+    expect(plan?.action).toBe("sell");
+    // 80% -> 40% of a $10k book is $4,000 of BTC.
+    expect(plan && "btcAmount" in plan ? plan.btcAmount * PX : 0).toBeCloseTo(4000, 6);
+  });
+
+  it("buys up to target when underweight beyond the band", () => {
+    const plan = planRebalance(bookAt(0.10), PX, 0.40, 0.10);
+    expect(plan?.action).toBe("buy");
+    expect(plan && "usdAmount" in plan ? plan.usdAmount : 0).toBeCloseTo(3000, 6);
+  });
+
+  it("lands exactly on target — the resulting weight is the target", () => {
+    const h = bookAt(0.80);
+    const plan = planRebalance(h, PX, 0.40, 0.10)!;
+    const btcAfter = h.btcHolding - ("btcAmount" in plan ? plan.btcAmount : 0);
+    const cashAfter = h.cashUsd + ("btcAmount" in plan ? plan.btcAmount * PX : 0);
+    const weightAfter = (btcAfter * PX) / (cashAfter + btcAfter * PX);
+    expect(weightAfter).toBeCloseTo(0.40, 10);
+  });
+
+  it("refuses trades below the dust floor even when outside the band", () => {
+    // A tiny book: 100% -> 40% is only $60, far under the minimum notional.
+    expect(planRebalance(bookAt(1.0, 100), PX, 0.40, 0.10)).toBeNull();
+  });
+
+  it("returns null for an empty or unpriced book rather than dividing by zero", () => {
+    expect(planRebalance({ cashUsd: 0, btcHolding: 0 }, PX, 0.40, 0.10)).toBeNull();
+    expect(planRebalance(bookAt(0.9), 0, 0.40, 0.10)).toBeNull();
+  });
+
+  it("liquidates fully at a zero target, and never sells more BTC than held", () => {
+    const h = bookAt(0.9);
+    const plan = planRebalance(h, PX, 0, 0.10)!;
+    expect(plan.action).toBe("sell");
+    expect("btcAmount" in plan ? plan.btcAmount : 0).toBeCloseTo(h.btcHolding, 12);
+    expect("btcAmount" in plan ? plan.btcAmount : 0).toBeLessThanOrEqual(h.btcHolding);
+  });
+
+  it("never asks to spend more cash than the book holds at a 100% target", () => {
+    const h = bookAt(0.1);
+    const plan = planRebalance(h, PX, 1, 0.10)!;
+    expect(plan.action).toBe("buy");
+    expect("usdAmount" in plan ? plan.usdAmount : 0).toBeLessThanOrEqual(h.cashUsd + 1e-6);
   });
 });
