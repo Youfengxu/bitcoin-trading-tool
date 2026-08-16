@@ -127,7 +127,8 @@ export default function Performance() {
       {/* Caveats that would otherwise make these numbers quietly wrong to read.
           The internal book's history spans a strategy change, so its lifetime
           return blends two strategies rather than measuring either. */}
-      {(summary?.signalsAreAdvisory || (summary?.equityPoints ?? 0) < 3) && (
+      {(summary?.signalsAreAdvisory || (summary?.equityPoints ?? 0) < 3
+        || summary?.riskMeanNegative || summary?.sharpeRatio == null) && (
         <div className="text-xs font-mono-tech text-amber-500 border border-amber-500/30 rounded px-3 py-2 space-y-1">
           {summary?.signalsAreAdvisory && (
             <div>
@@ -141,6 +142,22 @@ export default function Performance() {
             <div>
               This book&apos;s history spans a strategy change (engine until 2026-08-16, static
               after), so its lifetime return blends both. Compare books from 2026-08-16 onward.
+            </div>
+          )}
+          {summary?.riskMeanNegative && (
+            <div>
+              &dagger; Mean return over this window is negative, where <strong>Sharpe inverts</strong>:
+              cutting volatility makes it more negative, so it penalises exactly the risk reduction
+              a defensive strategy exists to provide. Showing <strong>Calmar</strong> (annualised
+              return &divide; max drawdown) instead, which stays meaningful.
+            </div>
+          )}
+          {summary?.sharpeRatio == null && !summary?.riskMeanNegative && (
+            <div>
+              Risk ratios need at least 30 return samples over 14 days
+              ({summary?.riskSamples ?? 0} samples, {(summary?.riskSpanDays ?? 0).toFixed(1)} days so far).
+              Shown as &mdash; rather than a number, since a short window produces a
+              confident-looking wrong figure rather than a rough one.
             </div>
           )}
           {(summary?.equityPoints ?? 0) < 3 && (
@@ -320,9 +337,18 @@ export default function Performance() {
         </Card>
         <Card className="hud-panel border-border">
           <CardContent className="pt-4">
-            <div className="text-xs font-mono-tech text-muted-foreground uppercase">Sharpe Ratio</div>
-            <div className={`font-hud text-lg mt-1 ${(summary?.sharpeRatio ?? 0) >= 1 ? "text-[oklch(0.82_0.22_145)]" : (summary?.sharpeRatio ?? 0) >= 0 ? "text-[oklch(0.82_0.18_195)]" : "text-destructive"}`}>
-              {(summary?.sharpeRatio ?? 0).toFixed(2)}
+            <div className="text-xs font-mono-tech text-muted-foreground uppercase">
+              {summary?.riskMeanNegative ? "Calmar Ratio\u2020" : "Sharpe Ratio"}
+            </div>
+            <div className={`font-hud text-lg mt-1 ${(() => {
+              const v = summary?.riskMeanNegative ? summary?.calmarRatio : summary?.sharpeRatio;
+              if (v == null) return "text-muted-foreground";
+              return v >= 1 ? "text-[oklch(0.82_0.22_145)]" : v >= 0 ? "text-[oklch(0.82_0.18_195)]" : "text-destructive";
+            })()}`}>
+              {(() => {
+                const v = summary?.riskMeanNegative ? summary?.calmarRatio : summary?.sharpeRatio;
+                return v == null ? "\u2014" : v.toFixed(2);
+              })()}
             </div>
           </CardContent>
         </Card>

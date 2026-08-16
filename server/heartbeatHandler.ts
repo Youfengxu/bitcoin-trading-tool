@@ -31,6 +31,7 @@ import {
 import { notifyOwner } from "./_core/notification";
 import { applyExternalModifiers, signalFromScores, type ExternalSignals } from "./engine/externalModifiers";
 import { executeSignalTrade, executeRebalance, executeShadowSignal, seedShadowBook, getRealVenue, type Fill } from "./engine/executionVenue";
+import { reconstructEquity } from "./engine/equityCurve";
 import { collectPositioning } from "./engine/positioningCollector";
 import * as db from "./db";
 
@@ -803,10 +804,36 @@ async function generateWeeklyReport() {
     const endPrice = candles[candles.length - 1].close;
     const btcBuyHoldReturn = ((endPrice - startPrice) / startPrice) * 100;
 
-    // Calculate strategy return for the week
-    const startValue = simState?.seedAmountUsd ?? 10000;
+    // Strategy return FOR THE WEEK.
+    //
+    // This previously used seedAmountUsd as the start value, which made every
+    // row the CUMULATIVE return since inception stored in a column named
+    // returnPct on a table keyed by weekStart/weekEnd. Every consumer read it as
+    // a weekly figure. The Sharpe ratio was computed from those numbers, and
+    // since cumulative returns are autocorrelated by construction their mean and
+    // standard deviation have no interpretation as periodic returns — that is
+    // how the page came to display an annualised Sharpe of -13.99.
+    //
+    // The week's opening value is reconstructed from the equity curve, which is
+    // the same source drawdown now uses.
     const endValue = simState?.totalValueUsd ?? 10000;
-    const strategyReturn = ((endValue - startValue) / startValue) * 100;
+    const weekTrades = await db.getRecentTrades(1000, db.INTERNAL_VENUE);
+    const weekPrices = (await db.getRecentMetrics(5000)).map((m) => ({ ts: m.ts, price: m.price }));
+    const weekCurve = reconstructEquity(
+      weekTrades.map((t) => ({ ts: t.ts, cashAfter: t.cashAfter, btcAfter: t.btcAfter })),
+      weekPrices,
+      simState
+        ? {
+            cashUsd: simState.cashUsd, btcHolding: simState.btcHolding,
+            price: simState.lastPrice ?? endPrice, ts: now,
+          }
+        : undefined,
+    );
+    const atWeekStart = weekCurve.filter((p) => p.ts <= weekAgo).pop();
+    // Fall back to the seed only when there is genuinely no earlier point — i.e.
+    // the book's first week — where seed-to-now IS the week's return.
+    const startValue = atWeekStart?.value ?? simState?.seedAmountUsd ?? 10000;
+    const strategyReturn = startValue > 0 ? ((endValue - startValue) / startValue) * 100 : 0;
 
     // Win rate for the week
     const signals = await db.getRecentSignals(200);

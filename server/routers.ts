@@ -33,7 +33,7 @@ import {
   staticTargetWeight,
   staticRebalanceBand,
 } from "../shared/tradingTypes";
-import { reconstructEquity, maxDrawdown } from "./engine/equityCurve";
+import { reconstructEquity, maxDrawdown, riskMetrics } from "./engine/equityCurve";
 import { fetchExternalSignals } from "./heartbeatHandler";
 import { applyExternalModifiers } from "./engine/externalModifiers";
 import { executeSignalTrade, getRealVenue, SHADOW_VENUE } from "./engine/executionVenue";
@@ -444,16 +444,6 @@ export const appRouter = router({
       const winRate = resolvedSignals.length > 0 ? wins / resolvedSignals.length : 0;
       const totalReturn = state ? ((state.totalValueUsd - state.seedAmountUsd) / state.seedAmountUsd) * 100 : 0;
 
-      // Compute Sharpe ratio from weekly returns
-      const weeklyReturns = weekly.map((w) => w.returnPct);
-      let sharpeRatio = 0;
-      if (weeklyReturns.length >= 2) {
-        const avgReturn = weeklyReturns.reduce((a, b) => a + b, 0) / weeklyReturns.length;
-        const variance = weeklyReturns.reduce((sum, r) => sum + (r - avgReturn) ** 2, 0) / weeklyReturns.length;
-        const stdDev = Math.sqrt(variance);
-        sharpeRatio = stdDev > 0 ? (avgReturn / stdDev) * Math.sqrt(52) : 0; // annualized
-      }
-
       // Drawdown is reconstructed from the price series rather than sampled at
       // trades. Sampling at trades under-reports badly for a low-turnover book:
       // the static allocation trades ~once a quarter, so a deep intra-quarter
@@ -473,6 +463,11 @@ export const appRouter = router({
           : undefined
       );
       const drawdown = maxDrawdown(curve);
+      // Risk ratios come from the curve, not from weekly_performance rows: those
+      // stored CUMULATIVE return in a column read as weekly, and they exist only
+      // for the internal book — so a venue-aware summary would otherwise report
+      // internal's Sharpe for every book.
+      const risk = riskMetrics(curve);
 
       const mode = strategyMode();
       return {
@@ -485,7 +480,16 @@ export const appRouter = router({
         winRate,
         totalTrades: trades.length,
         weeklyReports: weekly.length,
-        sharpeRatio,
+        /** Null when there is too little data. Do NOT coerce to 0 — that reads as a real value. */
+        sharpeRatio: risk.sharpe,
+        sortinoRatio: risk.sortino,
+        /** Return over max drawdown. Preferred when meanNegative, where Sharpe inverts. */
+        calmarRatio: risk.calmar,
+        annualisedReturn: risk.annualisedReturn === null ? null : risk.annualisedReturn * 100,
+        riskSamples: risk.samples,
+        riskSpanDays: risk.spanDays,
+        /** Sharpe is not interpretable while true — reducing volatility makes it worse. */
+        riskMeanNegative: risk.meanNegative,
         maxDrawdown: drawdown * 100,
         venue,
         /**

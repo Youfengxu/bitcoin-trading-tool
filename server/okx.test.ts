@@ -18,7 +18,9 @@ import {
 } from "./engine/okxClient";
 import { getExecutionVenue, resetExecutionVenue, planRebalance, SHADOW_VENUE } from "./engine/executionVenue";
 import {
-  reconstructEquity, maxDrawdown, type TradePoint, type PricePoint,
+  reconstructEquity, maxDrawdown, riskMetrics,
+  MIN_RETURN_SAMPLES, MIN_SPAN_DAYS,
+  type TradePoint, type PricePoint,
 } from "./engine/equityCurve";
 import {
   convictionScaledFraction,
@@ -467,5 +469,76 @@ describe("equity curve for a book that has never traded", () => {
 
   it("still returns nothing when there is neither a trade nor a current mark", () => {
     expect(reconstructEquity([], [{ ts: 0, price: 50000 }])).toHaveLength(0);
+  });
+});
+
+// ─── Risk-adjusted metrics ────────────────────────────────────────────
+
+describe("riskMetrics", () => {
+  const HOUR = 3600_000;
+  /** `n` hourly points compounding at `r` per period, with optional noise. */
+  const curve = (n: number, r: number, noise = 0) => {
+    const out = [];
+    let v = 10000;
+    for (let i = 0; i < n; i++) {
+      out.push({ ts: i * HOUR, value: v });
+      v *= 1 + r + (noise ? (i % 2 === 0 ? noise : -noise) : 0);
+    }
+    return out;
+  };
+
+  it("returns nulls rather than 0 when there is too little data", () => {
+    // 0 reads as a real, meaningful value; null forces the UI to show nothing.
+    const m = riskMetrics(curve(10, 0.001, 0.002));
+    expect(m.sharpe).toBeNull();
+    expect(m.sortino).toBeNull();
+    expect(m.calmar).toBeNull();
+    expect(m.samples).toBe(9);
+  });
+
+  it("requires a long enough span, not just enough samples", () => {
+    // 400 points one MINUTE apart clears MIN_RETURN_SAMPLES but spans <14 days.
+    const dense = Array.from({ length: 400 }, (_, i) => ({ ts: i * 60_000, value: 10000 + i }));
+    const m = riskMetrics(dense);
+    expect(m.samples).toBeGreaterThanOrEqual(MIN_RETURN_SAMPLES);
+    expect(m.spanDays).toBeLessThan(MIN_SPAN_DAYS);
+    expect(m.sharpe).toBeNull();
+  });
+
+  it("derives annualisation from the curve's own spacing, not a fixed assumption", () => {
+    const hourly = riskMetrics(curve(500, 0.0005, 0.001));
+    expect(hourly.periodsPerYear).toBeCloseTo(365 * 24, 0);
+
+    const daily = Array.from({ length: 60 }, (_, i) => ({ ts: i * 24 * HOUR, value: 10000 + i * 10 }));
+    expect(riskMetrics(daily).periodsPerYear).toBeCloseTo(365, 0);
+  });
+
+  it("flags a negative mean, where Sharpe inverts and must not be read bare", () => {
+    const m = riskMetrics(curve(500, -0.0005, 0.001));
+    expect(m.meanNegative).toBe(true);
+    expect(m.sharpe).toBeLessThan(0);
+  });
+
+  it("demonstrates the inversion the flag exists to warn about", () => {
+    // Same negative drift, different volatility. The CALMER book scores WORSE on
+    // Sharpe — which is why Calmar is preferred when meanNegative.
+    const calm = riskMetrics(curve(500, -0.0005, 0.0005));
+    const wild = riskMetrics(curve(500, -0.0005, 0.005));
+    expect(calm.sharpe!).toBeLessThan(wild.sharpe!);
+    expect(calm.meanNegative && wild.meanNegative).toBe(true);
+  });
+
+  it("computes a positive Calmar for a rising book and reports drawdown-relative return", () => {
+    // Noise must EXCEED the drift, or the curve never declines, drawdown is 0
+    // and Calmar is legitimately undefined (covered by the next test).
+    const m = riskMetrics(curve(500, 0.0005, 0.002));
+    expect(m.calmar).not.toBeNull();
+    expect(m.calmar!).toBeGreaterThan(0);
+    expect(m.annualisedReturn!).toBeGreaterThan(0);
+  });
+
+  it("leaves Calmar null when the book never drew down (division by zero)", () => {
+    const monotone = Array.from({ length: 500 }, (_, i) => ({ ts: i * HOUR, value: 10000 + i }));
+    expect(riskMetrics(monotone).calmar).toBeNull();
   });
 });

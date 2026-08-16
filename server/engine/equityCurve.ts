@@ -111,3 +111,95 @@ export function maxDrawdown(curve: EquityPoint[]): number {
   }
   return worst;
 }
+
+// ─── Risk-adjusted metrics ────────────────────────────────────────────
+
+/**
+ * Minimum evidence before a risk-adjusted ratio is reported at all.
+ *
+ * Ratios of a mean to a standard deviation are extremely unstable in small
+ * samples, and annualising multiplies that instability by sqrt(periods/year) —
+ * so a short window does not produce a rough number, it produces a confident
+ * looking wrong one. Below these thresholds the metrics return null so the UI
+ * can show "—" instead of inventing a figure.
+ */
+export const MIN_RETURN_SAMPLES = 30;
+export const MIN_SPAN_DAYS = 14;
+
+export interface RiskMetrics {
+  /** Annualised, risk-free rate taken as 0. Null when there is too little data. */
+  sharpe: number | null;
+  /** Like Sharpe but penalising only downside deviation. */
+  sortino: number | null;
+  /** Annualised return divided by max drawdown. Well-behaved when returns are negative. */
+  calmar: number | null;
+  annualisedReturn: number | null;
+  periodsPerYear: number;
+  samples: number;
+  spanDays: number;
+  /**
+   * True when the mean return is negative, where SHARPE INVERTS: reducing
+   * volatility makes it more negative, so it penalises exactly the risk
+   * reduction a defensive strategy exists to provide. Ranking strategies by
+   * Sharpe over a losing period rewards the one that lost more wildly. Callers
+   * must surface this rather than print the number bare — prefer Calmar here.
+   */
+  meanNegative: boolean;
+}
+
+const EMPTY: RiskMetrics = {
+  sharpe: null, sortino: null, calmar: null, annualisedReturn: null,
+  periodsPerYear: 0, samples: 0, spanDays: 0, meanNegative: false,
+};
+
+/**
+ * Risk metrics computed from the equity curve itself.
+ *
+ * Deriving the annualisation factor from the curve's own median spacing rather
+ * than assuming a fixed period keeps this correct across the 5m/15m/1h/4h/1d
+ * intervals the app supports, and across gaps in the series.
+ */
+export function riskMetrics(curve: EquityPoint[]): RiskMetrics {
+  if (curve.length < 2) return EMPTY;
+  const c = [...curve].sort((a, b) => a.ts - b.ts);
+
+  const rets: number[] = [];
+  const gaps: number[] = [];
+  for (let i = 1; i < c.length; i++) {
+    if (c[i - 1].value > 0) rets.push(c[i].value / c[i - 1].value - 1);
+    if (c[i].ts > c[i - 1].ts) gaps.push(c[i].ts - c[i - 1].ts);
+  }
+  const spanMs = c[c.length - 1].ts - c[0].ts;
+  const spanDays = spanMs / 86400_000;
+  if (!rets.length || !gaps.length) return { ...EMPTY, samples: rets.length, spanDays };
+
+  gaps.sort((a, b) => a - b);
+  const medianGap = gaps[Math.floor(gaps.length / 2)];
+  const periodsPerYear = medianGap > 0 ? (365 * 86400_000) / medianGap : 0;
+
+  const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+  const meanNegative = mean < 0;
+  const base = { periodsPerYear, samples: rets.length, spanDays, meanNegative };
+
+  if (rets.length < MIN_RETURN_SAMPLES || spanDays < MIN_SPAN_DAYS) {
+    return { ...EMPTY, ...base };
+  }
+
+  const sd = Math.sqrt(rets.reduce((s, r) => s + (r - mean) ** 2, 0) / rets.length);
+  const downside = rets.filter((r) => r < 0);
+  const dd = downside.length
+    ? Math.sqrt(downside.reduce((s, r) => s + r * r, 0) / rets.length)
+    : 0;
+
+  const total = c[c.length - 1].value / c[0].value - 1;
+  const annualisedReturn = spanDays > 0 ? Math.pow(1 + total, 365 / spanDays) - 1 : null;
+  const drawdown = maxDrawdown(c);
+
+  return {
+    ...base,
+    sharpe: sd > 0 ? (mean / sd) * Math.sqrt(periodsPerYear) : null,
+    sortino: dd > 0 ? (mean / dd) * Math.sqrt(periodsPerYear) : null,
+    calmar: drawdown > 0 && annualisedReturn !== null ? annualisedReturn / drawdown : null,
+    annualisedReturn,
+  };
+}
