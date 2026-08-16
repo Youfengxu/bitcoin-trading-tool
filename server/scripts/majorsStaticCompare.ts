@@ -117,7 +117,7 @@ const pad = (s: string | number, w: number) => String(s).padStart(w);
 async function main() {
   console.log(`\n${"═".repeat(104)}`);
   console.log(`Majors: engine vs static ${(W * 100).toFixed(0)}% vs hold · ${YEARS}y continuous · ${(FEE * 10000).toFixed(0)}bps`);
-  console.log("═".repeat(104));
+  console.log("═".repeat(110));
 
   const rows: Array<{ id: string; eng: Perf; st: Perf; hold: Perf }> = [];
   for (const id of PAIRS) {
@@ -129,23 +129,23 @@ async function main() {
   console.log(`\n${rows.length} assets with full history\n`);
   console.log("asset".padEnd(11) + pad("hold", 10) + pad("engine", 10) + pad("static", 10) +
               pad("st − eng", 11) + pad("eng DD", 9) + pad("st DD", 8) + pad("hold DD", 9) +
-              pad("eng trd", 9) + pad("st trd", 8));
-  console.log("─".repeat(104));
+              pad("eng trd", 10) + pad("st trd", 14));
+  console.log("─".repeat(110));
   for (const r of rows) {
     console.log(r.id.replace("-USDT", "").padEnd(11) +
       pad(pct(r.hold.ret), 10) + pad(pct(r.eng.ret), 10) + pad(pct(r.st.ret), 10) +
       pad(pct(r.st.ret - r.eng.ret), 11) +
       pad(`${(r.eng.maxDD * 100).toFixed(0)}%`, 9) + pad(`${(r.st.maxDD * 100).toFixed(0)}%`, 8) +
       pad(`${(r.hold.maxDD * 100).toFixed(0)}%`, 9) +
-      pad(r.eng.trades, 9) + pad(`${r.st.trades} (${r.st.sells}s/${r.st.buys}b)`, 8));
+      pad(r.eng.trades, 10) + pad(`${r.st.trades} (${r.st.sells}s/${r.st.buys}b)`, 14));
   }
-  console.log("─".repeat(104));
+  console.log("─".repeat(110));
   const m = (f: (r: typeof rows[0]) => number) => rows.reduce((a, r) => a + f(r), 0) / rows.length;
   console.log("MEAN".padEnd(11) + pad(pct(m((r) => r.hold.ret)), 10) + pad(pct(m((r) => r.eng.ret)), 10) +
     pad(pct(m((r) => r.st.ret)), 10) + pad(pct(m((r) => r.st.ret - r.eng.ret)), 11) +
     pad(`${(m((r) => r.eng.maxDD) * 100).toFixed(0)}%`, 9) + pad(`${(m((r) => r.st.maxDD) * 100).toFixed(0)}%`, 8) +
     pad(`${(m((r) => r.hold.maxDD) * 100).toFixed(0)}%`, 9) +
-    pad(m((r) => r.eng.trades).toFixed(0), 9) + pad(m((r) => r.st.trades).toFixed(0), 8));
+    pad(m((r) => r.eng.trades).toFixed(0), 10) + pad(m((r) => r.st.trades).toFixed(0), 14));
 
   const stBeatsEng = rows.filter((r) => r.st.ret > r.eng.ret).length;
   const stDDBetter = rows.filter((r) => r.st.maxDD < r.eng.maxDD).length;
@@ -155,7 +155,7 @@ async function main() {
   console.log(`hold beats static on return      ${holdBeatsSt}/${rows.length}   (the cost of holding ${(W * 100).toFixed(0)}% instead of 100%)`);
   console.log(`\nNOTE: majors correlate ~0.449 hourly, so the effective independent sample is ~2.2`);
   console.log(`assets, not ${rows.length}. Consistency of direction is the signal here; the mean is not evidence.`);
-  console.log("═".repeat(104) + "\n");
+  console.log("═".repeat(110) + "\n");
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
