@@ -642,6 +642,104 @@ async function runOnBothBooks(
 }
 
 /**
+ * Paper book that keeps trading the strategy which is NOT live, so the two can
+ * be compared on forward data rather than by argument.
+ *
+ * Switching the book to static left no engine track to compare against: both the
+ * paper ledger and the OKX book follow the active strategy, so their difference
+ * measures execution quality, not strategy. This book restores the counterfactual.
+ *
+ * It is paper-only and never touches the real venue — it cannot place an order or
+ * spend anything. It exists purely to answer "what would the other strategy have
+ * done", with real forward prices instead of a backtest.
+ */
+export const SHADOW_VENUE = "shadow-engine";
+
+/**
+ * Creates the shadow book holding EXACTLY what the live paper book holds right
+ * now, so both start identical and every subsequent divergence is attributable
+ * to strategy alone.
+ *
+ * Seeding it at a round $10,000 instead would bake in a starting-weight
+ * difference and make the early comparison measure that rather than the
+ * strategies — the same reason seedAllocatedBook mirrors the paper book's weight.
+ *
+ * Does nothing if the book already exists, so it never overwrites a running one.
+ */
+export async function seedShadowBook(): Promise<void> {
+  const existing = await db.getSimulatorState(SHADOW_VENUE);
+  if (existing) return;
+
+  const paper = await db.getSimulatorState(db.INTERNAL_VENUE);
+  if (!paper) return;
+
+  await db.initSimulatorState(SHADOW_VENUE);
+  await db.updateSimulatorState(
+    {
+      cashUsd: paper.cashUsd,
+      btcHolding: paper.btcHolding,
+      totalValueUsd: paper.totalValueUsd,
+      lastPrice: paper.lastPrice ?? undefined,
+    },
+    SHADOW_VENUE
+  );
+  console.log(
+    `[ExecutionVenue] seeded ${SHADOW_VENUE} from the paper book — ` +
+    `${paper.cashUsd.toFixed(2)} cash / ${paper.btcHolding.toFixed(8)} BTC. ` +
+    `It will trade the engine on paper while the live books run static.`
+  );
+}
+
+/**
+ * Runs a confirmed signal against the shadow book only.
+ *
+ * Deliberately mirrors executeSignalTrade's sizing and cooldown so the shadow is
+ * a faithful engine track rather than a differently-parameterised one — but it
+ * measures the cooldown against the SHADOW's own last trade, since it trades on
+ * a different schedule from the live book.
+ */
+export async function executeShadowSignal(opts: {
+  action: "buy" | "sell";
+  price: number;
+  params: StrategyParameters;
+  confidence?: number;
+  candleInterval?: string;
+  reasoning?: string;
+  signalId?: number;
+  ts?: number;
+}): Promise<Fill | null> {
+  const ts = opts.ts ?? Date.now();
+  const intervalMs = INTERVAL_MS[opts.candleInterval ?? "1h"] ?? 3600_000;
+  const cooldownBars = tradeCooldownBars();
+  if (cooldownBars > 0) {
+    const [last] = await db.getRecentTrades(1, SHADOW_VENUE);
+    if (last && (ts - last.ts) / intervalMs < cooldownBars) return null;
+  }
+
+  const fraction =
+    opts.confidence === undefined
+      ? opts.params.maxPositionPct
+      : convictionScaledFraction(opts.params.maxPositionPct, opts.confidence, opts.params.minConfidence);
+
+  const planSize: PlanSize = (h) => {
+    const notional =
+      opts.action === "buy" ? h.cashUsd * fraction : h.btcHolding * fraction * opts.price;
+    if (notional < MIN_TRADE_NOTIONAL_USD) return null;
+    return opts.action === "buy"
+      ? { action: "buy", usdAmount: h.cashUsd * fraction }
+      : { action: "sell", btcAmount: h.btcHolding * fraction };
+  };
+
+  return executeOnVenue(
+    new InternalVenue(),
+    SHADOW_VENUE,
+    { price: opts.price, reasoning: opts.reasoning, signalId: opts.signalId },
+    ts,
+    planSize
+  );
+}
+
+/**
  * The rebalance trade for one book, or null to do nothing. Pure — no I/O, no
  * environment reads — so the arithmetic that decides how much real money moves
  * is directly testable.

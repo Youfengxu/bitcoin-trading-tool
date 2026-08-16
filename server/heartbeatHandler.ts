@@ -30,7 +30,7 @@ import {
 } from "../shared/tradingTypes";
 import { notifyOwner } from "./_core/notification";
 import { applyExternalModifiers, signalFromScores, type ExternalSignals } from "./engine/externalModifiers";
-import { executeSignalTrade, executeRebalance, getRealVenue, type Fill } from "./engine/executionVenue";
+import { executeSignalTrade, executeRebalance, executeShadowSignal, seedShadowBook, getRealVenue, type Fill } from "./engine/executionVenue";
 import { collectPositioning } from "./engine/positioningCollector";
 import * as db from "./db";
 
@@ -502,6 +502,34 @@ async function runSignalGeneration(candleInterval = "1h") {
         });
       } else if (skipped !== "within-band") {
         console.log(`[Heartbeat] rebalance not executed (${skipped ?? "no fill"})`);
+      }
+
+      // Keep an engine track running on paper so static-vs-engine stays a live
+      // comparison rather than a backtest argument. Paper only — this book can
+      // never place a real order. Failure here must not disturb the live books,
+      // so it is isolated: a broken shadow costs a log line, not a trade.
+      try {
+        await seedShadowBook();
+        if (confirmed && signal.signal !== "hold") {
+          const shadow = await executeShadowSignal({
+            action: signal.signal,
+            price: metrics.price,
+            params,
+            confidence: signal.confidence,
+            candleInterval,
+            reasoning: signal.reasoning,
+            signalId: signalId ?? undefined,
+            ts,
+          });
+          if (shadow) {
+            console.log(
+              `[Heartbeat] shadow-engine ${shadow.action.toUpperCase()} ` +
+              `${shadow.btcAmount.toFixed(8)} BTC @ $${shadow.price.toFixed(2)} (paper only)`
+            );
+          }
+        }
+      } catch (e) {
+        console.warn("[Heartbeat] shadow-engine book failed (live books unaffected):", e);
       }
     } else if (confirmed && signal.signal !== "hold") {
       // Records to the paper ledger always, and to OKX as well when configured.

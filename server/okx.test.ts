@@ -16,7 +16,7 @@ import {
   roundQuote,
   getOkxConfig,
 } from "./engine/okxClient";
-import { getExecutionVenue, resetExecutionVenue, planRebalance } from "./engine/executionVenue";
+import { getExecutionVenue, resetExecutionVenue, planRebalance, SHADOW_VENUE } from "./engine/executionVenue";
 import {
   convictionScaledFraction,
   TRADE_COOLDOWN_BARS,
@@ -369,5 +369,15 @@ describe("planRebalance", () => {
     const plan = planRebalance(h, PX, 1, 0.10)!;
     expect(plan.action).toBe("buy");
     expect("usdAmount" in plan ? plan.usdAmount : 0).toBeLessThanOrEqual(h.cashUsd + 1e-6);
+  });
+});
+
+describe("shadow book", () => {
+  it("is a distinct venue from the live books, so it can never be confused for one", () => {
+    expect(SHADOW_VENUE).not.toBe("internal");
+    expect(SHADOW_VENUE).not.toBe("okx-demo");
+    expect(SHADOW_VENUE).not.toBe("okx-live");
+    // The name must say what it trades — it shows up verbatim in the UI dropdown.
+    expect(SHADOW_VENUE).toContain("engine");
   });
 });
