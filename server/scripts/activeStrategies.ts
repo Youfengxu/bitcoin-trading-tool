@@ -288,14 +288,24 @@ async function main() {
     // fitted parameter: the multiplier is derived from realised exposure, not
     // chosen to improve returns.
     const matchTo = STATIC_W;
-    const avgExpo = (w: (i: number) => number | null) => {
-      let sum = 0, n = 0;
-      for (let i = f; i <= to; i += 24) { const x = w(i); if (x !== null) { sum += Math.min(MAX_W, x); n++; } }
-      return n ? sum / n : 1;
-    };
+    // CAUSAL exposure matching. The first version averaged realised exposure over
+    // the ENTIRE window and applied the resulting multiplier from bar one -- a
+    // look-ahead leak. It was verdict-flipping, not cosmetic: an independent
+    // audit measured B* at +68.1% with the leak against +38.3% without it, versus
+    // a +54.0% control. The leaked version beat the control; the causal one loses
+    // badly. The earlier claim that the leak "only favoured the strategies, which
+    // lost anyway" was therefore wrong for the full sample.
+    //
+    // k is now recomputed from realised exposure STRICTLY BEFORE each decision,
+    // over an expanding window, starting at 1.0 until there is history to average.
     const scaleTo = (w: (i: number) => number | null) => {
-      const k = matchTo / Math.max(1e-9, avgExpo(w));
-      return daily((i) => { const x = w(i); return x === null ? null : Math.min(MAX_W, x * k); });
+      let sum = 0, n = 0;
+      return daily((i) => {
+        const x = w(i);
+        const k = n > 0 ? matchTo / Math.max(1e-9, sum / n) : 1;
+        if (x !== null) { sum += Math.min(MAX_W, x); n++; }   // accrue AFTER using k
+        return x === null ? null : Math.min(MAX_W, x * k);
+      });
     };
     results.push(runWeighted(btc, f, to, scaleTo((i) => (trendUp(i) ? volScale(i) : 0)),
       0.10, "B* trend vol-scaled, exposure-matched"));

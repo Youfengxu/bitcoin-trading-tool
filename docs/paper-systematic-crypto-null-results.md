@@ -110,12 +110,12 @@ Every test after the first failure used:
 ### 3.2 Effective sample size
 
 This constraint governs the entire crypto section. Hourly returns across the
-majors correlate at **ρ = 0.449**, giving
+majors correlate at **ρ = 0.663** (derived: `server/scripts/effectiveSample.ts`), giving
 
-> n_eff = 12 / (1 + 11 × 0.449) = **2.02**,
+> n_eff = 12 / (1 + 11 × 0.663) = **1.45**,
 
-and asymptoting at 1/ρ ≈ 2.23 *however many assets are added*. Twelve assets
-agreeing is closer to two agreeing. Any cross-sectional claim in this market is
+and asymptoting at 1/ρ ≈ 1.51 *however many assets are added*. Twelve assets
+agreeing is closer to **1.5** agreeing. Any cross-sectional claim in this market is
 therefore near-unfalsifiable with three years of data, and we treat consistency of
 *direction* as evidence of robustness while declining to attach significance to
 means.

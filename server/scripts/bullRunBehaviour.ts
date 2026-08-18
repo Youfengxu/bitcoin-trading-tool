@@ -212,7 +212,12 @@ async function main() {
   let num = 0, den = 0;
   for (let i = 0; i < bx.length; i++) { num += (bx[i] - mx) * (by[i] - my); den += (bx[i] - mx) ** 2; }
   const slope = den > 0 ? num / den : 0;
+  // CAUTION: for a book holding a constant fraction beta of the asset, regressing
+  // (engine - hold) on hold has slope identically beta-1. At ~40% exposure that is
+  // ~-0.6 with NO information content about the strategy. This is an identity, not
+  // a finding, and was previously reported as though it were the latter.
   console.log(`\nshortfall vs bull strength: slope = ${slope.toFixed(2)}`);
+  console.log(`  (identity: slope == beta-1 for a constant-beta book; at ${"~40%"} exposure this is mechanical)`);
   console.log(`  ⇒ every +10pp of bull costs roughly ${(slope * 10).toFixed(1)}pp of relative underperformance`);
   console.log("═".repeat(100) + "\n");
 }

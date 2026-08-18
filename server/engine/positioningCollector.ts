@@ -63,7 +63,9 @@ async function paced<T>(fn: () => Promise<T>, fallback: T, attempts = 3): Promis
  */
 export function collectedCurrencies(): string[] {
   // Default list is chosen for REGIME DIVERSITY and low correlation, not for
-  // volume. Hourly crypto returns across 20 assets correlate at 0.449, so the
+  // volume. Hourly crypto returns across 20 assets were quoted at 0.449 — a figure
+  // never derived in this repo. The 12-major value, derived by
+  // scripts/effectiveSample.ts, is 0.663. Treat the 20-asset number as unverified. So the
   // effective independent sample is N/(1+(N-1)p) = 2.1 — and it asymptotes at
   // 1/p = 2.2 however many are added. Extra correlated majors buy almost
   // nothing; assets that move idiosyncratically buy the regime variety that a

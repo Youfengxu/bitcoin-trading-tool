@@ -37,7 +37,7 @@ rejected:
   HMM at 2/3/4 states, BOCPD at four hazard rates, GMM, exit-policy tuning — all
   landed between 46.2% and 51.3% accuracy against a 47.2% base rate.
 - **Cross-sectional breadth as a fix.** Hourly returns across majors correlate at
-  0.449, so effective sample size asymptotes at **~2.2 assets** however many are
+  0.663, so effective sample size asymptotes at **~1.5 assets** however many are
   added. This is the single most important constraint on anything below.
 - **Parameter optimisation.** Train-best and test-best exit parameters were
   *anti*-correlated (Spearman ρ = −0.339).
@@ -123,7 +123,7 @@ and doubles the operational surface.*
 Rank the universe on trailing return, long the top decile, short the bottom.
 
 **Why it is ranked below B despite better academic support:** it is precisely the
-strategy the 0.449 correlation finding damages most. Cross-sectional momentum
+strategy the 0.663 correlation finding damages most. Cross-sectional momentum
 monetises *dispersion between* assets; when everything moves together, the spread
 compresses. That is not a hypothesis — the published evidence says exactly this,
 that gains reverse during broad corrections and the strategy behaves like mean
@@ -271,7 +271,7 @@ At retail fees, unlevered, on a held-out year, **none of the four beat a static
 
 Caveats that cut both ways: the held-out window is a single 12-month bear market,
 which is one regime and not a cycle; funding history is one quarter; and the
-universe is ten majors correlating at 0.449, so effective breadth is ~2.2 assets.
+universe is ten majors; the twelve-asset figure is 0.663, so effective breadth is ~1.5 assets.
 A bull-market held-out window would likely favour the trend options, and that
 test is worth running when the data exists.
 
@@ -345,7 +345,7 @@ a bear-market artefact. Two strong bull years were available and neither trend
 nor volatility scaling beat a static 40% allocation across them at matched risk.
 
 The one caveat that survives is narrower: three consecutive years of a single
-asset class, ten names correlating at 0.449. That is roughly **2.2 effective
+asset class, ten names; measured correlation 0.663. That is roughly **1.5 effective
 independent observations** of a market cycle — enough to reject these specific
 strategies at these fees, not enough to make a general claim about trend
 following.
@@ -407,7 +407,7 @@ drawdown state it costs 5 trades instead of 108, and survives.
 
 Every caution this project has learned applies:
 
-- **Effective sample size.** Twelve assets at rho = 0.449 is **2.02 independent
+- **Effective sample size.** Twelve assets at rho = 0.663 is **1.45 independent
   observations**. "11 of 12" is closer to *2 of 2* agreeing.
 - **One path.** Drawdown-scaling de-risks after falls, which flatters a sample
   containing a sustained Year-3 decline and would *hurt* on a sharp V-shaped

@@ -8,7 +8,7 @@
  * book actually holding these would have experienced.
  *
  * ── The caveat that governs how much this proves ──────────────────────
- * Hourly crypto returns across majors correlate at ~0.449, so the effective
+ * Hourly crypto returns across majors correlate at ~0.663 (see effectiveSample.ts), so the effective
  * independent sample is N/(1+(N-1)p) ≈ 2.2 assets no matter how many are added.
  * Ten majors agreeing is therefore NOT ten confirmations — it is closer to two,
  * and largely a statement that they all rose and fell together. What it CAN
@@ -153,7 +153,7 @@ async function main() {
   console.log(`\nstatic beats engine on return    ${stBeatsEng}/${rows.length}`);
   console.log(`static beats engine on drawdown  ${stDDBetter}/${rows.length}`);
   console.log(`hold beats static on return      ${holdBeatsSt}/${rows.length}   (the cost of holding ${(W * 100).toFixed(0)}% instead of 100%)`);
-  console.log(`\nNOTE: majors correlate ~0.449 hourly, so the effective independent sample is ~2.2`);
+  console.log(`\nNOTE: majors correlate ~0.663 hourly (see effectiveSample.ts), so n_eff is ~1.5`);
   console.log(`assets, not ${rows.length}. Consistency of direction is the signal here; the mean is not evidence.`);
   console.log("═".repeat(110) + "\n");
 }

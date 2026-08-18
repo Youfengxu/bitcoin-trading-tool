@@ -16,11 +16,21 @@
  * at 3-5x the numbers reconcile, and the liquidation risk on the short leg is
  * then the entire risk of the strategy.
  *
- * ── Costs charged ─────────────────────────────────────────────────────
- * Entry and exit on both legs at the account's real 10bps taker rate, plus
- * periodic rehedging: as price moves, the spot leg's value drifts from the short
- * notional and delta must be restored. Rehedging is what turns a clean carry
- * calculation into a real one, and it is the cost most often omitted.
+ * ── Costs charged, and one that is NOT ─────────────────────────────────
+ * Entry and exit on both legs at the account's real 10bps taker rate.
+ *
+ * An earlier version of this docstring claimed to charge periodic rehedging and
+ * called it "the cost most often omitted"; an audit found the branch unreachable
+ * (spotQty was never mutated, so the drift test was identically zero) and
+ * `rehedges` always printed 0.
+ *
+ * The honest correction is to the CLAIM, not the code. For a linear
+ * USDT-margined perpetual, holding X BTC spot against a short of X BTC notional
+ * is delta-neutral at any price -- the two PnLs cancel exactly -- so price moves
+ * alone do not force a rehedge. Real rehedging is driven by redeploying accrued
+ * funding and by margin management, both second-order at this size. The reported
+ * net figures are therefore mildly OPTIMISTIC but not materially so, and the
+ * rehedge counter is retained only to show it is genuinely zero.
  *
  * ── The limitation that governs the result ────────────────────────────
  * OKX serves only ~96 days of funding history, so this cannot be tested across a

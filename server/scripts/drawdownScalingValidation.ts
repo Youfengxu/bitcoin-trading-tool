@@ -9,8 +9,10 @@
  *
  * ── Pre-registered criteria (all four required) ───────────────────────
  *
- *   1. PLATEAU, NOT SPIKE. The top-quartile region of the (floor x peak-window)
- *      grid spans >= 25% of cells. A lone good cell ringed by bad ones is a fit.
+ *   1. PLATEAU, NOT SPIKE. At least 25% of grid cells BEAT THE CONTROL. A lone
+ *      good cell ringed by bad ones is a fit. (The original wording -- "top
+ *      quartile spans >= 25% of cells" -- was vacuous: it holds by construction
+ *      for any grid, including an all-identical one.)
  *
  *   2. TRAIN RANK PREDICTS TEST RANK. Spearman rho > 0 between each parameter
  *      pair's train and test Sharpe. This is the criterion that killed exit-policy
@@ -59,7 +61,14 @@ const PAIRS = (arg("pairs") ??
 function sharpeOf(c: CandleData[], from: number, to: number, floor: number, peakW: number): number {
   let cash = SEED, u = 0;
   const eq: number[] = [];
-  let peak = 0, held = BASE;
+  // The running peak must be seeded from ALL history before `from`, not reset at
+  // the window edge. Resetting it wiped the inception peak on every test fold
+  // while train folds (from = 0) kept theirs, so the two scored structurally
+  // different rules -- which also corrupted the train-vs-test rank criterion.
+  // A live book does not forget its high-water mark at a fold boundary.
+  let peak = 0;
+  if (peakW === 0) for (let k = 0; k < from; k++) peak = Math.max(peak, c[k].close);
+  let held = BASE;
   for (let i = from; i <= to; i++) {
     const px = c[i].close;
     if (peakW === 0) peak = Math.max(peak, px);
@@ -121,9 +130,17 @@ async function main() {
     const vals = data.map(([, c]) => sharpeOf(c, 0, c.length - 1, f, p)).filter(Number.isFinite);
     return vals.reduce((a, b) => a + b, 0) / Math.max(1, vals.length);
   });
+  // NOTE: the original form of this criterion could not fail. Taking q1 as the
+  // element AT the 25th percentile and counting cells >= q1 returns >= 25% of the
+  // grid by construction, so a bar of "top quartile >= 25%" was vacuous -- an
+  // all-identical grid scored 40/40. A pre-registered criterion that cannot fail
+  // is worse than no criterion, because it reads as a passed control.
+  //
+  // Replaced with a substantive question: how much of the grid actually beats the
+  // CONTROL cell? A broad plateau of genuinely-better parameters is the thing the
+  // criterion was meant to detect.
   const sorted = [...pooled].sort((a, b) => b - a);
-  const q1 = sorted[Math.floor(sorted.length * 0.25)];
-  const topCells = pooled.filter((x) => x >= q1).length;
+  const topCells = pooled.filter((x, i) => i !== CONTROL && x > pooled[CONTROL]).length;
 
   console.log(`\nmean Sharpe across ${data.length} assets, by floor x peak-window\n`);
   console.log("floor   " + PEAK_WINDOWS_H.map((p) => (p === 0 ? "inception" : `${p / 24}d`).padStart(11)).join(""));
@@ -137,7 +154,7 @@ async function main() {
     console.log(row);
   }
   console.log(`\n* floor 1.0 = constant weight = the control (Sharpe ${pooled[CONTROL].toFixed(3)})`);
-  console.log(`top-quartile cells: ${topCells}/${cells.length}`);
+  console.log(`cells beating the control: ${topCells}/${cells.length - 1}`);
 
   // ── 2 & 3. Walk-forward ────────────────────────────────────────────
   const rhos: number[] = [];
@@ -184,7 +201,7 @@ async function main() {
 
   console.log(`\n${"═".repeat(92)}`);
   console.log("PRE-REGISTERED CRITERIA");
-  console.log(`  1. plateau (top quartile >= 25% of grid)     ${topCells >= cells.length * 0.25 ? "PASS" : "FAIL"}  (${topCells}/${cells.length})`);
+  console.log(`  1. plateau: >= 25% of grid beats the control  ${topCells >= (cells.length - 1) * 0.25 ? "PASS" : "FAIL"}  (${topCells}/${cells.length - 1})`);
   console.log(`  2. train rank predicts test rank (rho > 0)   ${meanRho > 0 ? "PASS" : "FAIL"}  (rho ${meanRho.toFixed(3)})`);
   console.log(`  3. FIXED param beats control out-of-sample   ${fixWins / folds > 0.5 ? "PASS" : "FAIL"}  (${((fixWins / folds) * 100).toFixed(0)}% of folds)`);
   console.log(`  4. breadth >= 8/12 assets                    ${breadth >= 8 ? "PASS" : "FAIL"}  (${breadth}/${perAssetFixed.length})`);

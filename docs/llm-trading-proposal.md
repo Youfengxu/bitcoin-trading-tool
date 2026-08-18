@@ -34,9 +34,9 @@ published support (§2).
 ### The structural reason to leave crypto
 
 The single fact that killed every crypto approach was not the models — it was
-**effective sample size**. Hourly returns across majors correlate at ~0.449, so
-N/(1+(N-1)ρ) asymptotes at **~2.2 independent assets no matter how many are
-added**. Twelve majors agreeing was closer to two agreeing. Every "improvement"
+**effective sample size**. Hourly returns across majors correlate at ~0.663, so
+N/(1+(N-1)ρ) asymptotes at **~1.5 independent assets no matter how many are
+added**. Twelve majors agreeing was closer to 1.5 agreeing. Every "improvement"
 was being validated on a sample of about two.
 
 Equities fix this at the root: thousands of names, genuine sectoral dispersion,

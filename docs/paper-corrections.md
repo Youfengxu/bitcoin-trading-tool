@@ -140,3 +140,129 @@ constraint was numerically wrong.
 The reviewer's closing judgement is accepted: the self-criticism was genuine in
 the appendices and performative in the abstract and discussion. Strategies were
 audited ruthlessly; the paper's own headline claims were not audited at all.
+
+---
+
+# Part 2 — code audit findings (agent 2 of 4)
+
+An adversarial audit of the backtest and analysis code. **Every statistical
+implementation checked clean** — Spearman tie handling, `tDistPValue` (matched to
+numerical integration to <1e-4 including fractional df), `tTest`, and
+`olsWithInteraction` (recovers known betas to 4dp). Fee accounting, off-by-one
+indexing, `nextSessionAfter`, and data contiguity also verified correct.
+
+**Every defect found was in USE, not implementation.** That is its own finding:
+correct primitives applied incorrectly.
+
+## C7. Exposure-matching look-ahead — CRITICAL, verdict-flipping, now fixed
+
+`activeStrategies.ts` averaged realised exposure over the **entire** window and
+applied the resulting multiplier from bar one. I disclosed this leak in
+`active-strategy-options.md` and argued it was harmless *a fortiori* — the leak
+favoured the active strategies and they lost anyway.
+
+**That argument was wrong.** Corrected to a causal expanding window:
+
+| | leaked | causal | control |
+|---|---|---|---|
+| B* full sample | +68.1% | **+41.6%** | +53.8% |
+
+The leaked version beat the control; the causal one loses by 12.2pp. The per-year
+table in the paper also changes — B* now loses **all three years**, where the
+leaked version won two:
+
+| window | CONTROL | B* (was) | **B* (causal)** | D* (causal) |
+|---|---|---|---|---|
+| Year 1 | +41.6% | +42.7% | **+28.9%** | +32.1% |
+| Year 2 | +37.5% | +29.3% | **+35.8%** | +39.5% |
+| Year 3 | −20.0% | −19.3% | **−20.3%** | −22.0% |
+| chained | **+55.8%** | +48.9% | **+39.5%** | +43.7% |
+
+The conclusion is unchanged in direction and much stronger in degree. But the
+*a fortiori* defence was not valid, and a paper whose thesis is self-auditing
+should not have relied on it.
+
+## C8. Running peak reset at fold boundaries — MAJOR, now fixed
+
+`drawdownScalingValidation.ts` started the running peak at zero at each window
+start. Train folds (`from = 0`) kept the inception peak; test folds (`from = ts`)
+silently wiped theirs, so the two scored **structurally different rules** — which
+also corrupted the train-vs-test rank criterion. A live book does not forget its
+high-water mark at a fold boundary.
+
+| | as written | peak carried (live behaviour) |
+|---|---|---|
+| beats control | 22% of folds | **6% of folds** |
+| breadth | 3/12 assets | **1/12 assets** |
+| train-test rho | +0.470 | +0.345 |
+
+The rule fails considerably harder than reported.
+
+## C9. A pre-registered criterion that could not fail — MAJOR, now fixed
+
+Criterion 1 took `q1` as the element *at* the 25th percentile and counted cells
+`>= q1`. That returns ≥25% of the grid **by construction** — an all-identical
+grid scores 40/40. It was reported as `PASS (12/40)` as though it were an
+informative control.
+
+**A pre-registered criterion that cannot fail is worse than no criterion**,
+because it reads as a passed check. Replaced with a substantive test — what
+fraction of the grid beats the control cell — which now reports 36/39.
+
+## C10. The funding-carry rehedge cost was advertised and never charged
+
+The docstring called rehedging "the cost most often omitted", and the branch was
+unreachable: `spotQty` was never mutated, so the drift test was identically zero
+and `rehedges` always printed 0.
+
+The correction is to the **claim**, not the code. For a linear USDT-margined
+perpetual, X BTC spot against a short of X BTC notional is delta-neutral at any
+price — the PnLs cancel exactly — so price moves alone do not force a rehedge.
+Real rehedging is driven by redeploying accrued funding and by margin management,
+both second-order at this size. The net figures are mildly optimistic, not
+materially wrong. But describing a cost the code never charged is precisely the
+failure mode §8 catalogues.
+
+## C11. The dose-response slope is an identity — now flagged
+
+`bullRunBehaviour.ts` regresses (engine − hold) on hold. For a book holding a
+constant fraction β, that slope is **identically β − 1**. At ~40% exposure it is
+≈ −0.6 with **zero information content**. The paper reports −0.57 as a finding
+about the engine. It is arithmetic.
+
+## C12. The correlation discount was inert — quantified
+
+Already flagged as "not meaningful as written"; the audit quantifies it. The
+estimator correlates quarterly cohorts *positionally* — the k-th event of one
+quarter against the k-th of another, pairing unrelated tickers — returns
+ρ = 0.0000 and n_eff = 796 = n, so the "DISCOUNTED" p-value is **byte-identical
+to the naive one**. Under 200 random within-quarter reorderings ρ ranges
+−0.08…+0.13 (n_eff 796…8). `minLen` also truncated every ~98-event cohort to 16.
+
+Criterion 2 — the study's flagship control against its own stated central error —
+did nothing at all.
+
+## C13. Minor
+
+- `incrementalR2` is in-sample with no df penalty: adequate at n=796 (noise mean
+  0.00068) but 0.0078 with a 45% false-positive rate at n=100. Fragile if the
+  sample shrinks.
+- `prices.ts` `adjClose: adj?.[i] ?? close` silently mixes unadjusted closes into
+  an adjusted series exactly where adjustment matters.
+- `earningsDrift.ts` puts `today` in the cache key, so sample composition depends
+  on run date.
+- `activeStrategies.ts` prints "held-out window" while running no holdout.
+- Survivorship is present in both universes but biases *against* the equity
+  hypothesis, as documented.
+
+---
+
+## Revised standing
+
+Of four independent reviews: the statistical machinery is correct; the paper's
+central constant was wrong; its flagship statistical control was inert; one
+disclosed leak was verdict-flipping rather than harmless; one pre-registered
+criterion could not fail; and one headline "finding" is an algebraic identity.
+
+The economic conclusions survive and in most cases strengthen. The paper's claim
+to methodological rigour does not survive in the form it was written.
