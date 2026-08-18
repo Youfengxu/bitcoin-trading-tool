@@ -1,196 +1,183 @@
-# Fifteen Null Results in Systematic Cryptocurrency Trading
+# Implementability of Systematic Trading Strategies at Retail Cost
 
-### A pre-registered negative-results study, with an extension to LLM-derived equity signals
+### A replication study on liquid cryptocurrency majors, with a pre-registered LLM text-signal extension
 
 **Author:** Youfeng Xu · research conducted with Claude Opus 5
-**Date:** 2026-08-18
-**Status:** working paper, self-published
+**Version:** 2 (2026-08-18). Version 1 was withdrawn after independent review; §11 records what changed and why.
+**Scope:** one venue (OKX), one operator, 36 months, unlevered, retail fee tier.
 
 ---
 
 ## Abstract
 
-We test fifteen families of systematic trading strategies on liquid
-cryptocurrency markets and one family of large-language-model text signals on US
-equities. **All fifteen fail** under pre-registered criteria with held-out
-evaluation and realistic costs.
+We ask whether published systematic trading strategies are *implementable* by a
+retail participant at a verified fee schedule, rather than whether they exist. On
+twelve liquid cryptocurrency majors over 36 months we test threshold rules, hidden
+Markov models, Bayesian online changepoint detection, Gaussian mixture clustering,
+time-series trend, cross-sectional momentum, volatility scaling and delta-neutral
+funding carry. We then run one pre-registered test of an LLM text signal on 796
+US earnings releases.
 
-Directional forecasting at daily-to-weekly horizons produces accuracies of
-46.2%–51.3% against a 47.2% base rate across threshold rules, hidden Markov
-models, Bayesian online changepoint detection, and Gaussian mixture clustering. A
-deployed signal engine is shown to be economically indistinguishable from a
-static 40% allocation that trades twice a year, while executing 3,698 trades per
-asset and consuming 27–37% of gross profit in fees. Four active strategies —
-funding carry, time-series trend, cross-sectional momentum and volatility scaling
-— fail unlevered at the venue's real fee schedule. A weight-scaling rule that
-improves Sharpe in 11 of 12 assets in-sample improves it in 3 of 12 out-of-sample.
-An LLM scoring 796 post-cutoff earnings releases achieves rank correlation
-+0.019 with subsequent market-adjusted drift, and incremental R² of 0.0023 over a
-finance word-count.
+None is implementable. **We are careful to distinguish two very different
+reasons.** The economic findings are well-identified: a deployed signal engine is
+shown by exposure decomposition to be a ~40% beta position executing 3,698 trades
+per asset, economically indistinguishable from a static allocation trading twice a
+year; unlevered funding carry nets **+0.93% APR on BTC and −0.23% on SOL** against
+a widely quoted 10–30%, because capital funds two legs and the quoted figures
+assume 3–5× leverage. The directional findings are **statistically uninformative**:
+with a measured cross-sectional correlation of **ρ = 0.663** the twelve-asset
+universe carries **1.45 effective independent observations**, and the minimum
+detectable directional edge at 80% power is **8.98pp** against an observed range
+spanning −1.0 to +4.1pp. We report minimum detectable effects throughout, because
+without them a null result is not a finding.
 
-We argue the more transferable contribution is **methodological**. Six distinct
-measurement defects were found *during* the work, each of which independently
-produced a false positive that survived casual inspection: an optimiser reporting
-93% against a true −1.6%; a validation bar ("improves in both regime windows")
-that was not out-of-sample at all; parameter selection where train and test rank
-were *anti*-correlated (ρ = −0.339); three separate non-determinism bugs, one of
-which flipped the sign of a decisive statistic between consecutive runs of
-identical code; and effective sample sizes of ~2.2 where 12 were assumed. We
-document each, because in every case the defect was more consequential than the
-model it evaluated.
+The LLM extension fails four pre-registered criteria (rank correlation +0.019,
+incremental R² 0.0023 over a finance lexicon). We report a design error that
+undermines it: **post-earnings drift is absent in our sample** (spread 0.23pp,
+p=0.715), so the study asked what a text signal adds *beyond* an anomaly the
+sample does not contain.
+
+An appendix documents defects found by adversarial review of our own work,
+including one disclosed look-ahead leak we wrongly argued was harmless, and one
+pre-registered criterion that could not fail. We do not claim these as novel
+methodology — most correspond to known results — but their *frequency* in a
+carefully-conducted programme may be the paper's most useful datum.
 
 ---
 
 ## 1. Introduction
 
-The systematic trading literature is heavily selection-biased. Negative results
-are rarely published, so a practitioner surveying it sees a field of successes
-and cannot calibrate how many attempts produced them. This paper reports the
-opposite: a complete, chronological account of one capital-constrained retail
-research programme in which every hypothesis tested was rejected.
+### 1.1 What this paper is, and is not
 
-Three properties make the account informative despite its negative conclusion:
+This is **not** a discovery paper and does not claim novel anomalies. Crypto
+momentum (Liu & Tsyvinski 2021; Liu, Tsyvinski & Wu 2022), post-earnings drift
+(Ball & Brown 1968; Bernard & Thomas 1989), volatility-managed portfolios
+(Moreira & Muir 2017) and LLM return prediction (Lopez-Lira & Tang 2026) are
+established literatures with far larger samples than ours.
 
-1. **Criteria were pre-registered** before each test, with thresholds and a
-   stated prior, so post-hoc bar-lowering is visible in version control.
-2. **Costs are the venue's actual schedule**, verified against the account
-   (OKX Lv1: maker 0.0800%, taker 0.1000%), not an assumed value.
-3. **Every false positive is reported alongside the defect that produced it.**
-   Several of the strategies below *did* look successful before a specific
-   measurement error was corrected.
+It is a **replication-and-implementability** study asking a narrower question: at
+a verified retail fee schedule, unlevered, with public data and ~$10⁴ of capital,
+does any of this survive? That question is under-reported precisely because it is
+unglamorous, and its answer does not follow from the existence of the anomaly.
 
-### 1.1 Scope
+### 1.2 Scope, stated as a limit
 
-Claims here are bounded to: publicly available price and funding data, daily-to-
-weekly horizons, the twelve most liquid crypto majors, unlevered positions,
-retail fee tiers, and capital of order $10⁴. We make no claim about
-high-frequency trading, market making, cross-venue arbitrage, on-chain strategies,
-institutional fee tiers, or leveraged structures. §8 argues these exclusions are
-not incidental — they are where the surviving edge plausibly lives.
+All claims are bounded to: public price and funding data; daily-to-weekly
+horizons; the twelve most liquid crypto majors; unlevered positions; OKX Lv1 fees
+(maker 0.0800%, taker 0.1000%, verified against the account); 36 months. We make
+**no claim** about high-frequency trading, market making, cross-venue arbitrage,
+on-chain strategies, institutional fee tiers, illiquid altcoins, or leverage.
 
 ---
 
 ## 2. Data
 
-| source | contents | period | notes |
-|---|---|---|---|
-| OKX `/market/history-candles` | hourly OHLCV, 12 majors | 2023-08 → 2026-08 | 26,280 bars each, verified contiguous |
-| OKX `/public/funding-rate-history` | 8-hour perpetual funding | 2026-05 → 2026-08 | 287 periods; **~96 days is all the venue serves** |
-| SEC EDGAR | 8-K Item 2.02 filings + EX-99.1 | 2024-07 → 2026-08 | point-in-time by construction |
-| Yahoo Finance | daily adjusted equity bars | 2024-01 → 2026-08 | split/dividend adjusted |
+| source | contents | period |
+|---|---|---|
+| OKX history-candles | hourly OHLCV, 12 majors | 2023-08 → 2026-08 (26,280 bars each, contiguous) |
+| OKX funding-rate-history | 8-hour perpetual funding | 2026-05 → 2026-08 (**96 days is all the venue serves**) |
+| SEC EDGAR | 8-K Item 2.02 + EX-99.1 | 2024-07 → 2026-08 |
+| Yahoo Finance | daily adjusted equity bars | 2024-01 → 2026-08 |
 
-**Universe.** BTC, ETH, SOL, BNB, XRP, DOGE, ADA, LINK, AVAX, LTC, DOT, TRX for
-crypto; 98 US equities with usable earnings events for the LLM extension.
+**Universe.** BTC ETH SOL BNB XRP DOGE ADA LINK AVAX LTC DOT TRX; 98 US equities
+with usable earnings events.
 
-**A data-completeness problem worth naming.** Both EDGAR and OKX paginate history,
-and both silently truncate if pagination is not followed. EDGAR's `filings.recent`
-caps at ~1,000 entries, which for an active filer is under two years; OKX's
-history endpoint returns an empty page under rate limiting that is
-indistinguishable from end-of-data. Each caused a real truncation during this
-work — one dropped BTC entirely from a study without any error. All fetches were
-subsequently paced, retried, contiguity-verified and cached to disk.
+**Survivorship.** Both universes are today's large caps. In crypto this excludes
+post-2023 listings and dead coins; in equities it biases *against* our hypothesis,
+since the published LLM effect concentrates in small caps.
 
 ---
 
-## 3. Method
+## 3. The binding constraint: effective sample size
 
-### 3.1 Evaluation protocol
+Mean pairwise correlation of hourly log returns across the twelve majors is
+**ρ = 0.663** (26,279 aligned bars, 66 pairs; min 0.396, median 0.696, max 0.817;
+derived by `server/scripts/effectiveSample.ts`). Hence
 
-Every test after the first failure used:
+> n_eff = 12 / (1 + 11 × 0.663) = **1.45**, asymptoting at 1/ρ ≈ **1.51**.
 
-- **Pre-registered criteria** with numeric thresholds, a stated prior, and an
-  abandonment condition, hashed so that changing a threshold changes the hash.
-- **Held-out evaluation.** Walk-forward folds where parameters are selected, or
-  fixed literature-sourced parameters where they are not.
-- **A dumb baseline in every comparison** — a static allocation, a trailing
-  average, a word-count lexicon, or buy-and-hold at matched exposure.
-- **Effective sample size** discounting, `n_eff = n / (1 + (n−1)ρ)`.
-- **Deterministic reruns**: pinned window boundaries, cached inputs, temperature 0.
+Adding assets cannot raise this above 1.51. **Twelve majors agreeing is closer to
+1.5 observations agreeing**, and no cross-sectional claim in this market is
+strongly falsifiable with three years of data.
 
-### 3.2 Effective sample size
+*Version 1 of this paper used ρ = 0.449 and n_eff = 2.02 throughout. That figure
+was never derived from data; see §11.*
 
-This constraint governs the entire crypto section. Hourly returns across the
-majors correlate at **ρ = 0.663** (derived: `server/scripts/effectiveSample.ts`), giving
+## 4. Statistical power
 
-> n_eff = 12 / (1 + 11 × 0.663) = **1.45**,
+Minimum detectable effects at 80% power, α = 0.05, computed from the realised
+samples:
 
-and asymptoting at 1/ρ ≈ 1.51 *however many assets are added*. Twelve assets
-agreeing is closer to **1.5** agreeing. Any cross-sectional claim in this market is
-therefore near-unfalsifiable with three years of data, and we treat consistency of
-*direction* as evidence of robustness while declining to attach significance to
-means.
+| test | n / n_eff | **MDE** | observed | verdict |
+|---|---|---|---|---|
+| crypto weekly direction | 242 | **8.98pp** | −1.0 to +4.1pp | **uninformative** |
+| engine vs static, episodes | ~17 | ~34pp win-rate | 42% | uninformative *as a test* |
+| Study 1 rank correlation | 796 | ρ = 0.099 | +0.019 | excludes only large effects |
+| Study 1 quintile spread | 159/quintile | 2.65pp | −0.10% | **uninformative** |
+| Study 1 incremental R² | 796 | ΔR² = 0.0099 | 0.0023 | pre-registration mis-specified |
+
+**These numbers govern how the rest of the paper should be read.** Published
+LLM-earnings effects sit at ρ ≈ 0.03–0.06 and PEAD spreads at 0.5–1.5pp: *both
+are below what this design could detect.* The crypto directional range of
+46.2%–51.3% fits entirely inside one confidence interval around the 47.2% base
+rate, and is consistent with no edge and with a 5pp edge simultaneously.
+
+Our pre-registered ΔR² ≥ 0.005 threshold sits at ~51% power; the 80%-power value
+was 0.0099. That criterion was mis-specified: its FAIL was a coin flip under the
+alternative.
 
 ---
 
-## 4. Results: directional forecasting
+## 5. Directional forecasting: uninformative nulls
 
-### 4.1 Threshold rules (families 1–8)
+Eight threshold rules, HMMs at 2/3/4 states (forward filtering only — never
+smoothed posteriors), BOCPD at four hazard rates, and GMM clustering, against a
+47.2% base rate: accuracies span **46.2%–51.3%**.
 
-Eight rules — moving-average crossovers, momentum at 168h and 336h,
-trend/ATR, ADX+DI, and majority votes — scored against a 47.2% base rate:
+Per §4 this range is uninformative. We report it because the *pattern* is
+suggestive even where the levels are not: accuracy and realised return are
+unrelated across the eight rules (r = 0.45, n = 8, **95% CI [−0.37, 0.88]** — a
+statistic that cannot distinguish "unrelated" from "strongly related").
 
-| classifier | accuracy | vs base | mean return |
-|---|---|---|---|
-| adx+di+sma200 | 51.3% | +4.1pp | +2.16% |
-| sma50 > sma200 | 50.7% | +3.5pp | +2.73% |
-| ema12 > ema26 | 48.0% | +0.8pp | +3.18% |
-| mom 336h | 47.5% | +0.4pp | −1.29% |
+### 5.1 What the fitted models actually separate
 
-The decisive observation is not the small edge but that **accuracy and return are
-uncorrelated** (r = 0.45 across eight rules). The most accurate classifier returns
-a middling +2.16% while the best-returning sits 0.8pp above chance. If these had
-skill, being right more often would pay more.
-
-### 4.2 State models and changepoint detection (families 9–12)
-
-A Gaussian mixture model, hidden Markov models at 2/3/4 states, and Bayesian
-online changepoint detection at four hazard rates. **Inference used forward
-filtering only** — never smoothed posteriors, which use the whole sequence and are
-the standard way an HMM backtest flatters its author.
-
-HMM accuracy: 46.2%/49.9%/48.4% at k = 2/3/4. BOCPD: 0 of 4 criteria at every
-hazard rate. Self-transition probabilities of 0.83–0.97 confirm the machinery
-produced persistent, coherent states; the states simply did not predict direction.
-
-### 4.3 Why the literature and these data disagree
-
-Published HMM results in crypto are not wrong; they answer a different question.
-We measured what the fitted clusters actually separate, out-of-sample:
+The one well-identified result here. Out-of-sample, the fitted GMM clusters
+separate:
 
 | separates | in units of that variable's own s.d. |
 |---|---|
 | forward 168h **volatility** | **1.04** |
 | forward 168h **return** | 0.33 |
 
-**Regimes are real and volatility-defined, not directional.** "Bull/bear/calm"
-labels in the literature are largely volatility states, and calm-versus-turbulent
-is genuinely forecastable — this is why GARCH works. Every method in §4.2 applied
-a working volatility detector to an unforecastable directional question.
+**Regimes are volatility states, not directional ones.** This reconciles our nulls
+with the regime literature without impugning it: "bull/bear/calm" labels are
+largely volatility-defined, and calm-versus-turbulent is genuinely forecastable —
+which is why GARCH works. Our directional tests applied a working volatility
+detector to a question it does not answer.
 
-Three secondary gaps: published regime charts frequently use *smoothed*
-posteriors, unusable live; the effective sample here is ~2 regime episodes rather
-than 31,206 bars; and "best one-step-ahead forecast among competing models" is a
-far weaker claim than "profitable after 10bps through a binary switch".
+Three further gaps between published regime work and live use: smoothed posteriors
+are unusable in real time; our effective sample is ~2 regime episodes; and "best
+one-step-ahead forecast among competing models" is far weaker than "profitable
+after costs through a binary switch".
 
-### 4.4 A negative result on volatility-managed portfolios
+### 5.2 A failed replication of volatility management
 
-Given §4.3, volatility scaling should help. Inverse-volatility weighting
-(Moreira–Muir) scored **Sharpe 0.75** against constant weight's **0.87** across
-12 assets. Separately, a fitted GMM was a *worse* volatility forecaster than a
-20-line trailing average (r = 0.488 vs 0.619) and worse economically.
+Inverse-volatility weighting scored **Sharpe 0.75** against constant weight's
+**0.87** across 12 assets. A fitted GMM was a *worse* volatility forecaster than a
+20-line trailing average (r = 0.488 vs 0.619).
 
-**Forecastable is not sufficient.** Volatility can be predicted and the prediction
-still fails to improve risk-adjusted returns.
+This is consistent with Cederburg, O'Doherty, Wang & Yan (2020), the standard
+out-of-sample refutation of Moreira–Muir, which we should have cited before
+running the test rather than after. **Forecastable is not sufficient**: volatility
+can be predicted and the prediction still fail to improve risk-adjusted returns.
 
 ---
 
-## 5. Results: the deployed engine versus a static allocation
+## 6. The deployed engine: a well-identified economic result
 
-The production system combined RSI, MACD, Bollinger, z-score and EMA signals with
-walk-forward parameter optimisation. Evaluated across 165 overlapping 90-day
-episodes, 5 assets, 3 years:
+Across 165 overlapping 90-day episodes, 5 assets, 3 years:
 
-| regime bucket | n | hold | engine | static 40% |
+| regime | n | hold | engine | static 40% |
 |---|---|---|---|---|
 | bear < −20% | 41 | −33.8% | −17.3% | −13.6% |
 | mild bull 0–25% | 38 | +10.5% | +3.8% | +4.9% |
@@ -198,270 +185,255 @@ episodes, 5 assets, 3 years:
 | parabolic > 100% | 8 | +209.2% | +89.5% | +65.7% |
 
 **The engine captures ~35–40% of whatever the market does, in both directions**,
-which its 38–43% average exposure fully explains. It beat buy-and-hold in 8 of 89
-bull episodes (9%), and the shortfall scales linearly with bull strength (slope
-−0.57: every +10pp of rally costs ~5.7pp of relative underperformance).
+which its 38–43% average exposure fully explains. Against a static 40% book: mean
+return **+5.7% vs +5.6%**, mean drawdown **15.7% vs 13.8%**, mean trades **249 vs
+2**.
 
-Against a static 40% allocation over 165 episodes: **mean return +5.7% vs +5.6%,
-mean drawdown 15.7% vs 13.8%, mean trades 249 vs 2.** The engine wins 42% of
-episodes — worse than a coin flip.
+This conclusion rests on **exposure decomposition and trade counts, not on
+significance**. The engine wins 42% of episodes, but at n_eff ≈ 17 that is p = 0.50
+— indistinguishable from a coin flip, and we do not claim otherwise.
 
-We interpret this as the central practical finding of the crypto work: **an engine
-that cannot time is delivering beta, and a static weight delivers beta more
-cheaply.**
+*We previously reported a −0.57 "dose-response slope" of shortfall on bull
+strength as a finding. For a constant-β book that slope is identically β − 1; at
+40% exposure it is ≈ −0.6 mechanically. It is an identity and is withdrawn.*
 
 ---
 
-## 6. Results: active strategies, unlevered, at real fees
+## 7. Active strategies, unlevered, at verified fees
 
-Four strategies at verified OKX Lv1 rates, exposure-matched where comparable,
-evaluated per-year across three years (two bull, one bear):
+Exposure-matched with a **causal** expanding-window multiplier (see §11 — version
+1 used a look-ahead here, and the correction reverses its conclusion):
 
-| window | BTC | static 40% | trend (vol-scaled) | vol-scaled |
+| window | BTC | static 40% | trend, vol-scaled | vol-scaled |
 |---|---|---|---|---|
-| Year 1 | +115.6% | +41.6% | +42.7% | +36.7% |
-| Year 2 | +104.9% | +37.5% | +29.3% | +38.4% |
-| Year 3 | −46.4% | −20.0% | −19.3% | −21.7% |
-| **chained** | | **+55.8%** | +48.9% | +48.2% |
+| Year 1 | +115.6% | **+41.6%** | +28.9% | +32.1% |
+| Year 2 | +104.9% | **+37.5%** | +35.8% | +39.5% |
+| Year 3 | −46.4% | **−20.0%** | −20.3% | −22.0% |
+| **chained** | | **+55.8%** | +39.5% | +43.7% |
 
-Cross-sectional momentum, judged against buy-and-hold (its actual exposure peer),
-returned +1.5pp, +0.6pp, then **−23.4pp** — tracking hold in bull markets while
-paying 39–43 trades a year, then losing 23 points in the drawdown.
+Trend loses in **all three years**. Cross-sectional momentum, judged against
+buy-and-hold (its exposure peer), returns +1.5pp, +0.6pp, then **−23.4pp** —
+consistent with the crash risk documented by Daniel & Moskowitz (2016) and Barroso
+& Santa-Clara (2015), and with Liu, Tsyvinski & Wu's finding that crypto momentum
+lives in a far broader cross-section than twelve majors. **We tested where the
+effect is documented not to be.**
 
-**Funding carry, unlevered.** Measured OKX funding is 1–5% APR gross, not the
-10–30% widely quoted; that gap is leverage of 3–5×. Unlevered, capital funds two
-legs, halving the yield, and fees take the remainder:
+### 7.1 Funding carry
+
+Measured OKX funding is **1–5% APR gross**, against 10–30% widely quoted. The gap
+is leverage. Unlevered, capital funds two legs, halving the yield; fees take the
+rest:
 
 | perp | gross | **net on capital** |
 |---|---|---|
 | BTC | +1.62% APR | **+0.93%** |
 | SOL | +0.47% | **−0.23%** |
 
-### 6.1 Cost is not the binding constraint
+Ninety-six days of funding history cannot characterise a regime-dependent series;
+this is one quarter, not an expected return.
 
-A natural objection is that retail fees, not the signals, killed these. We tested
-it directly by sweeping the fee schedule:
+### 7.2 Cost is not the binding constraint
 
-| fee | static 40% | trend-gated |
-|---|---|---|
-| 10bps | 0.551 | 0.491 |
-| **0bps** | 0.552 | **0.550** |
-
-**At zero fees the trend signal exactly ties the control.** A market maker paying
-nothing would extract nothing from it. The constraint is the absence of edge, not
-the cost of trading — which materially narrows where remaining edge could lie.
+Sweeping the fee schedule to zero, the trend signal scores 0.550 against the
+control's 0.552 — a difference far inside the ±0.58 standard error of a 3-year
+Sharpe. **The sweep does not isolate cost as the constraint**; it shows only that
+removing costs does not produce a visible edge. Version 1 claimed this "exactly
+ties" and inferred an absence of edge. That inference outran the data.
 
 ---
 
-## 7. Results: LLM text signals in equities (family 15)
+## 8. LLM text signals in equities
 
-If price-derived features are exhausted, the natural extension is a different
-information source. Equities offer mandatory disclosure — text that is not
-derivable from price — and thousands of names rather than 2.2 effective assets.
+### 8.1 Lookahead control
 
-### 7.1 The lookahead problem, and the control for it
-
-An LLM asked to forecast an event inside its training data may simply recall the
-outcome. Following Gao, Jiang & Yan, we measure **Lookahead Propensity** by
-date-only recall probe. Measured directly:
+Following Gao, Jiang & Yan (2025), knowledge cutoffs were measured rather than
+assumed, by date-only recall probe:
 
 | model | recall through | collapse | recorded cutoff |
 |---|---|---|---|
 | muse-glimmer-30b | 2024-04 | 2024-06 | 2024-05-31 |
 | gpt-oss-120b | 2024-05 | 2024-07 | 2024-06-30 |
 
-Cutoffs are recorded at the END of the last month showing any recall: erring late
-costs samples, erring early admits contaminated ones. **All study events are
-strictly after the cutoff, enforced by a runtime assertion rather than a
-convention.**
+Cutoffs are recorded at the END of the last month showing recall — erring late
+costs samples, erring early admits contamination. All events are strictly
+post-cutoff, enforced by runtime assertion.
 
-### 7.2 Comprehension is real
+### 8.2 Comprehension holds; prediction does not
 
-Before testing prediction we tested reading, on 14 disclosures with known
-polarity, split into obvious and subtle cases:
+On 14 disclosures with known polarity the model scored rank correlation **0.870**
+against human judgement on subtle cases, where a Loughran–McDonald-style lexicon
+scored **−0.476** — worse than random, inverting on constructions like *"strong
+momentum and record engagement… the board has suspended the dividend and the chief
+executive will depart immediately."*
 
-| | LLM | lexicon |
-|---|---|---|
-| sign correct | 93% | 50% |
-| rank corr. vs human (all) | 0.931 | 0.147 |
-| **rank corr. (subtle only)** | **0.870** | **−0.476** |
-
-On subtle text a finance word-count is *negatively* correlated with human reading
-— worse than random. It scores *"strong momentum and record engagement… the board
-has suspended the dividend and the chief executive will depart immediately"* at
-**+0.50**; the model scores it **−0.80**. Comprehension is not in question.
-
-### 7.3 Prediction is not
-
-796 earnings releases, 98 tickers, all post-cutoff, 20-session market-adjusted
-drift:
+On 796 post-cutoff earnings releases, against 20-session market-adjusted drift:
 
 | criterion | result |
 |---|---|
-| direction (rank corr > 0) | PASS — +0.0192 |
-| significance (p ≤ 0.05) | **FAIL** — 0.491 |
-| incremental R² over lexicon ≥ 0.005 | **FAIL** — 0.0023 |
-| top-minus-bottom quintile spread > 0 | **FAIL** — −0.10% |
+| direction (ρ > 0) | PASS — +0.0192 (p = 0.589) |
+| significance p ≤ 0.05 | **FAIL** — 0.589, or 0.78 clustered by quarter |
+| incremental R² ≥ 0.005 | **FAIL** — 0.0023 |
+| quintile spread > 0 | **FAIL** — −0.10% |
 
-The lexicon's incremental R² over the LLM (0.0062) *exceeds* the LLM's over the
-lexicon (0.0023). Both are indistinguishable from noise.
+The lexicon's incremental R² over the LLM (0.0062) exceeds the LLM's over the
+lexicon (0.0023).
 
-**Reading well and forecasting are different problems**, and the gap between §7.2
-and §7.3 is the cleanest demonstration of it in this paper.
+### 8.3 A design error that undermines this test
 
----
+**Post-earnings drift is absent in our sample.** Announcement return versus
+subsequent market-adjusted drift: ρ = 0.0068 (p = 0.848); sign-split spread 0.23pp
+(p = 0.715).
 
-## 8. Methodological findings
+The study was designed to ask what a text signal adds *beyond* the drift anomaly —
+and the sample contains no anomaly to add to. An 8-ticker pilot did find drift
+(+2.52pp, naive p = 0.046), and that pilot's own sensitivity table showed the
+result vanishing at a residual correlation of 0.05. It did not survive scale-up.
 
-We regard this section as the paper's most transferable content. Each defect
-below produced a *positive* result that was wrong.
-
-### 8.1 In-sample results reported as held-out
-
-A walk-forward optimiser reported 93% over six weeks against a true −1.6%. The
-train/test split shared a warm-up window.
-
-### 8.2 A validation bar that was not out-of-sample
-
-"Improves in both regime windows" was this project's standard for months. A
-7×7 exit-policy grid showed 31 of 49 cells beating the control in both windows.
-On genuinely held-out folds, **2 of 49** did. Both windows partitioned the same
-data; the bar had only ever been used to *reject*, so it produced no false
-positive that reached production — but it could not validate.
-
-### 8.3 Anti-correlated parameter selection
-
-Across the same grid, Spearman ρ between train and test rank was **−0.339**.
-Historically-optimal parameters performed *worse than average* subsequently.
-Selection was worse than choosing blindly.
-
-Notably, the converse does not rescue a strategy either: the drawdown-scaling rule
-in §8.6 achieved ρ = **+0.470** — a well-behaved parameter space — and still lost,
-because every cell lost to the control. **Stable within-grid ranking is not
-evidence of edge.**
-
-### 8.4 Non-determinism (three occurrences)
-
-Three separate scripts returned different answers on consecutive runs of identical
-code: live-clock window boundaries; fold boundaries derived from a growing array;
-and silently truncated fetches. In one case the sign of the decisive statistic
-flipped between runs (ρ = −0.339 vs +0.150). **Determinism is a correctness
-property**: if two runs disagree, both are unusable and neither is identifiable as
-the wrong one.
-
-### 8.5 Correlated observations counted as independent
-
-Treating 65 earnings events across 8 co-moving mega-caps as independent gave
-p = 0.046. At a residual correlation of just 0.05, p = 0.337.
-
-### 8.6 In-sample breadth mistaken for robustness
-
-A drawdown-scaling weight rule improved Sharpe in **11 of 12** assets on the full
-sample at lower cost than the control. On held-out folds it improved **3 of 12**,
-winning 22% of 72 folds — worse than chance. The mechanism is understood: the
-sample *ends* inside a sustained drawdown, and a rule that de-risks as price falls
-below its running peak is mechanically flattered by any sample terminating in a
-decline.
-
-### 8.7 Metric pathology
-
-Sharpe inverts when mean returns are negative: reducing volatility makes it *more*
-negative, penalising exactly the risk reduction a defensive strategy provides.
-Ranking strategies by Sharpe over a losing period rewards whichever lost more
-wildly. We report Calmar where the mean is negative.
+**We should have verified PEAD at full scale before testing what an LLM adds to
+it.** §8.2 remains a valid statement about reading; §8.3 means the drift test
+answers a question the data cannot pose. We also failed to use the correct PEAD
+control — standardised unexpected earnings and the announcement-window return —
+having built the latter and not applied it.
 
 ---
 
 ## 9. Discussion
 
-### 9.1 The results are what efficiency looks like
+### 9.1 What we can and cannot conclude
 
-BTC and ETH are among the most heavily arbitraged instruments in existence.
-Finding no exploitable directional signal in their daily bars, using public data
-at retail cost, is a *measurement* rather than a methodological failure. Fifteen
-families agreeing is reasonably strong evidence for that bounded claim.
+**Can:** at this fee tier, unlevered, with public data and this capital, none of
+these strategies is implementable. The exposure decomposition, trade counts and
+carry arithmetic are well-identified and do not depend on power.
 
-### 9.2 What survives is structural, not predictive
+**Cannot:** that no edge exists. Our design cannot see directional edges below
+~9pp of accuracy, text effects below ρ ≈ 0.10, or drift spreads below 2.65pp — and
+published effects are smaller than all three. Fifteen strategy families were
+tested, but they share ~1.5 effective assets and one price path; **they are not
+fifteen independent tests**, and their joint failure carries roughly one degree of
+freedom.
 
-Every strategy that demonstrably works in these markets — market making,
-cross-venue and DEX–CEX arbitrage, MEV and liquidation capture, levered basis
-carry at scale — shares a property: **none is a forecast.** Each is a position
-within market structure requiring infrastructure, latency or balance sheet rather
-than a better signal. Our funding-carry result reaches the same conclusion from
-the opposite direction: the one mechanical edge tested pays under 1% unlevered.
+Under independence, 15 tests at α = 0.05 give a family-wise error rate of 53.7%,
+so finding *nothing* is mildly stronger evidence than a single null. We note this
+in fairness; it does not rescue the power problem.
 
-### 9.3 On LLMs specifically
+### 9.2 Structural versus predictive edge
 
-The defensible thesis was never that an LLM predicts prices. It was that
-comprehension at scale was scarce, and text contains information price does not.
-§7.2 confirms the comprehension; §7.3 finds no predictive content in this sample.
-
-We caution against reading §7.3 as a general refutation. The published effect
-concentrates in small caps and negative news, and is documented as *decaying with
-adoption*. Our sample is large-cap-skewed and entirely post-adoption — we tested
-where and when the effect should be weakest.
+Strategies that reportedly work in these markets — market making, cross-venue
+arbitrage, MEV capture, levered basis at scale — are positions within market
+*structure* rather than forecasts. Our carry result is consistent with this: the
+one mechanical edge tested pays under 1% unlevered, i.e. roughly the compensation
+one would expect for a service requiring no forecast. **We did not test these
+strategies and state this as a hypothesis, not a finding** (version 1 asserted it
+as fact, outside its declared scope).
 
 ---
 
 ## 10. Limitations
 
-1. **Three years, one asset class, ~2.2 effective independent observations.**
-   Sufficient to reject specific strategies at specific costs; insufficient for
-   general claims about trend following or momentum.
-2. **Funding history is 96 days.** Carry is regime-dependent and this is a single
-   quarter.
-3. **Standard signals only.** We tested well-known indicators — precisely those
-   most likely already arbitraged. Absence of edge in public signals is weak
-   evidence about proprietary ones.
-4. **The LLM universe skews large-cap** despite intent, and releases were
-   truncated at 30,000 characters against a median length of 31,757.
-5. **One model family per test.** Different LLMs might read differently, though
-   two models scored near-identically in the fitness pre-flight (ρ 0.939 vs 0.870).
-6. **The cross-sectional correlation estimator in Study 1 returned 0.000 and is
-   not meaningful as written.** Immaterial to a p of 0.491, but it must be fixed
-   before any positive result is reported.
+1. **~1.45 effective independent observations.** Most directional conclusions are
+   underpowered, as §4 quantifies.
+2. **Ninety-six days of funding history.**
+3. **Standard, already-arbitraged signals only.** Absence of edge in public
+   indicators is weak evidence about proprietary ones.
+4. **The LLM universe skews large-cap**, where the published effect is weakest,
+   and releases were truncated at 30,000 characters against a median of 31,757.
+5. **PEAD absent in-sample** (§8.3): the flagship LLM test is mis-designed.
+6. **Study 1's cross-sectional correlation estimator is inert** — it pairs the
+   k-th event of one quarter with the k-th of another, returns ρ = 0.000, and the
+   "discounted" p-value equals the naive one.
+7. **One venue, one operator, one implementation.** No external replication of the
+   backtests themselves.
+8. **Version 1 contained a look-ahead leak in the exposure-matching multiplier**
+   (§7, §11) that was disclosed in a companion document but not in that version's
+   limitations.
 
 ---
 
-## 11. Conclusion
+## 11. What changed from version 1
 
-Fifteen strategy families, pre-registered and held-out, at a verified retail fee
-schedule, produce no exploitable edge. The deployed system was economically
-equivalent to a static allocation trading twice a year, and every attempt to
-improve on that allocation — by forecasting direction, by scaling with
-volatility, by trend, by cross-section, by carry, or by reading disclosure text
-with a language model — failed on held-out data.
+Version 1 was submitted to four independent adversarial reviews — numerical
+replication, code audit, statistical refereeing, and a hostile peer review. It did
+not survive. Changes:
 
-The strategy question, for this capital, venue and data access, is closed. We
-believe the durable output is §8: six measurement defects, each of which produced
-a convincing false positive, and each of which would have been mistaken for a
-discovery had the corresponding control not been in place. In a literature that
-publishes successes, the practitioner's binding constraint is rarely the model.
-It is knowing which of your own results to disbelieve.
+| finding | status |
+|---|---|
+| **ρ = 0.449 was never derived**; true value 0.663, n_eff 1.45 not 2.02 | corrected throughout; a deriving script now exists |
+| **Exposure-matching look-ahead was verdict-flipping**, not harmless as argued: leaked B* +68.1%, causal +41.6%, control +53.8% | fixed; trend now loses all three years |
+| **Running peak reset at fold boundaries**, so train and test scored different rules | fixed; the weight rule now beats the control in 6% of folds, not 22% |
+| **Pre-registered criterion 1 could not fail** — `>= q1` at the 25th percentile returns 25% of any grid | replaced with cells-beating-control |
+| **Study 1's correlation discount was inert** | disclosed as a limitation |
+| **The −0.57 dose-response slope is the identity β−1** | withdrawn |
+| **Funding-carry docstring claimed a rehedge cost never charged** | claim corrected; a linear perp needs no price-driven rehedge |
+| **PEAD absent in-sample**, undermining the LLM test's design | disclosed as §8.3 |
+| No power analysis | added as §4 |
+| "Fifteen independent families" | withdrawn; they share ~1.5 effective assets |
+| Missing literature | Liu & Tsyvinski, Liu/Tsyvinski/Wu, Detzel et al., Cederburg et al., Barroso & Santa-Clara, Daniel & Moskowitz, Loughran & McDonald, Ball & Brown, Bernard & Thomas, Bailey & López de Prado, Harvey/Liu/Zhu added |
+
+**Every statistical primitive checked clean** under audit — Spearman tie handling,
+the t-distribution implementation (to <1e-4 against numerical integration),
+`tTest`, OLS with interaction, fee accounting, index alignment, data contiguity.
+Every defect was in *use*, not implementation.
+
+### 11.1 On the methodological appendix
+
+Version 1 framed these defects as its principal contribution. That was overstated.
+Most correspond to known results: in-sample leakage is the subject of Bailey &
+López de Prado's Probability of Backtest Overfitting; clustered standard errors
+are Petersen (2009); Sharpe's pathology under negative means is textbook. Our
+train/test rank anti-correlation (ρ = −0.339) *is* the PBO diagnostic, and we
+reported it as a discovery.
+
+What may be genuinely useful is not the taxonomy but the **base rate**: eight
+distinct defects, each independently sufficient to produce a false positive,
+arising in a single programme that was explicitly trying to avoid them — and four
+of the eight surviving until adversarial review, after the paper claiming
+methodological rigour had been written.
+
+---
+
+## 12. Conclusion
+
+For a retail participant at OKX Lv1 fees, unlevered, with public data and ~$10⁴ of
+capital, none of the strategies tested is implementable. The strongest results are
+economic rather than statistical: a signal engine that is a beta position with
+extra steps, and a carry trade that pays under 1% once leverage is removed.
+
+The directional nulls are not evidence of absence. They are evidence that this
+design could not have seen the effects the literature reports, and we would rather
+say so than let a null masquerade as a finding.
 
 ---
 
 ## References
 
-- Adams, R. & MacKay, D. (2007). *Bayesian Online Changepoint Detection.*
-- Gao, Z., Jiang, W. & Yan, Y. (2025). *Detecting Lookahead Bias in LLM Forecasts.* arXiv:2512.23847
-- Lopez-Lira, A. & Tang, Y. (2026). *Can ChatGPT Forecast Stock Price Movements? Return Predictability and Large Language Models.* Journal of Financial Economics. arXiv:2304.07619
-- Moreira, A. & Muir, T. (2017). *Volatility-Managed Portfolios.* Journal of Finance.
-- Moskowitz, T., Ooi, Y. H. & Pedersen, L. H. (2012). *Time Series Momentum.* Journal of Financial Economics.
-- IMF (2025). *A Large-Scale LLM Analysis of Central Bank Communication.* WP/2025/109
-- BIS (2025). *CB-LMs: Language Models for Central Banking.* Working Paper 1215
+Adams & MacKay (2007). *Bayesian Online Changepoint Detection.*
+Bailey & López de Prado (2015). *The Probability of Backtest Overfitting.* Journal of Computational Finance.
+Ball & Brown (1968). *An Empirical Evaluation of Accounting Income Numbers.* JAR.
+Barroso & Santa-Clara (2015). *Momentum Has Its Moments.* JFE.
+Bernard & Thomas (1989). *Post-Earnings-Announcement Drift.* JAR.
+Cederburg, O'Doherty, Wang & Yan (2020). *On the Performance of Volatility-Managed Portfolios.* JFE.
+Daniel & Moskowitz (2016). *Momentum Crashes.* JFE.
+Detzel, Liu, Strauss, Zhou & Zhu (2021). *Learning and Predictability via Technical Analysis: Bitcoin.* Financial Management.
+Gao, Jiang & Yan (2025). *Detecting Lookahead Bias in LLM Forecasts.* arXiv:2512.23847.
+Hansen (2005). *A Test for Superior Predictive Ability.* JBES.
+Harvey, Liu & Zhu (2016). *…and the Cross-Section of Expected Returns.* RFS.
+Liu & Tsyvinski (2021). *Risks and Returns of Cryptocurrency.* RFS.
+Liu, Tsyvinski & Wu (2022). *Common Risk Factors in Cryptocurrency.* JF.
+Lopez-Lira & Tang (2026). *Can ChatGPT Forecast Stock Price Movements?* JFE. arXiv:2304.07619.
+Loughran & McDonald (2011). *When Is a Liability Not a Liability?* JF.
+Moreira & Muir (2017). *Volatility-Managed Portfolios.* JF.
+Moskowitz, Ooi & Pedersen (2012). *Time Series Momentum.* JFE.
+Petersen (2009). *Estimating Standard Errors in Finance Panel Data Sets.* RFS.
+White (2000). *A Reality Check for Data Snooping.* Econometrica.
 
 ---
 
 ## Reproducibility
 
-All code, cached inputs and pre-registered criteria:
-
-- `bitcoin-trading-tool` — crypto strategies, backtests, and the deployed system
-- `llm-alpha-harness` — LLM evaluation harness, cutoff probes, EDGAR/price
-  connectors, Study 1
-
-Every result is regenerable from cached data. Pre-registrations are hashed so
-that a moved threshold is visible in version control.
+`bitcoin-trading-tool` (crypto strategies, deployed system) and
+`llm-alpha-harness` (LLM harness, cutoff probes, EDGAR/price connectors, Study 1).
+All results regenerate from cached data; pre-registrations are hashed so a moved
+threshold is visible in version control. `server/scripts/effectiveSample.ts`
+derives the correlation constant that version 1 asserted.
 
 **This is research, not investment advice.**
