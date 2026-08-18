@@ -430,3 +430,71 @@ that lowers weight during drawdowns improved risk-adjusted outcomes in 11 of 12
 assets at no extra cost.** That is a defensive rule, not a forecast — it reacts
 to what has already happened rather than predicting what comes next, which is
 precisely why it is plausible after thirteen failed forecasting attempts.
+
+---
+
+## 12. Validation of drawdown-scaling — it fails
+
+Section 11 found the rule improved Sharpe in 11 of 12 assets on the full sample
+and flagged that this had the profile of both a real finding and a false
+positive. Run against pre-registered criteria, it is the latter.
+
+| criterion | result |
+|---|---|
+| 1. plateau, not spike | **PASS** — 12/40 top-quartile, surface genuinely flat |
+| 2. train rank predicts test rank | **PASS** — Spearman rho = **+0.470** |
+| 3. fixed parameter beats control out of sample | **FAIL** — 22% of 72 folds |
+| 4. breadth >= 8/12 assets | **FAIL** — **3/12** |
+
+### The reversal
+
+Full sample: improves Sharpe in **11 of 12**. Held-out folds: improves in **3 of
+12**, and 22% of folds — *worse than a coin flip*.
+
+| asset | held-out, floor 0.3 | constant weight | diff |
+|---|---|---|---|
+| DOGE | −0.089 | +0.124 | **−0.213** |
+| ETH | −0.206 | −0.055 | −0.151 |
+| SOL | −0.308 | −0.161 | −0.146 |
+| AVAX | −0.478 | −0.341 | −0.137 |
+| BTC | +0.170 | +0.176 | −0.005 |
+| DOT | −0.632 | −0.708 | +0.076 |
+| TRX | +1.592 | +1.518 | +0.074 |
+| LTC | −0.043 | −0.106 | +0.064 |
+
+### Why — and it is not simply noise
+
+The full sample **ends inside the Year-3 drawdown**. A rule whose entire
+behaviour is "reduce exposure as price falls below its running peak" is
+mechanically flattered by any sample terminating in a decline: it is short
+exactly where the sample stops. Rolling held-out folds mostly do *not* end in a
+drawdown, and there the rule simply carries less exposure for no compensation.
+
+This is the path-dependency named in §11 — "it would hurt on a V-shaped
+recovery" — confirmed rather than avoided.
+
+### The most interesting part: criterion 2 passed
+
+Spearman rho = **+0.470**, against the exit-policy work's −0.339. The parameter
+space is genuinely well-behaved: a floor that beat another floor on training data
+usually beat it on test data too.
+
+**And it did not help at all.** Stable *within-grid* ranking is worthless when
+the whole grid loses to the control — selecting the best-on-train parameter won
+16 of 72 folds, exactly the same 22% as the fixed one. A well-behaved parameter
+space is not evidence of edge; it only means that if an edge existed, you could
+find it.
+
+That distinction is worth keeping. Criterion 2 was designed to catch a lottery,
+and it correctly reports this is not one — the strategy is simply, consistently,
+slightly worse.
+
+### Standing
+
+This is the **fourteenth** method family to fail here. The pattern is unchanged:
+promising in-sample, gone on held-out data. The full-sample "11 of 12" in §11 was
+a false positive produced by this project's own analysis and caught by this
+project's own protocol, which is the protocol working.
+
+**§11's revision is itself revised.** The correct statement returns to §10's:
+nothing tested informs the weight. It is a risk-tolerance choice.
