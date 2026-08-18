@@ -349,3 +349,84 @@ asset class, ten names correlating at 0.449. That is roughly **2.2 effective
 independent observations** of a market cycle — enough to reject these specific
 strategies at these fees, not enough to make a general claim about trend
 following.
+
+---
+
+## 11. What CAN inform the weight — and what cannot
+
+The frontier in §10 said the weight is a pure risk choice with no analytical
+answer. That was too strong. Testing weight RULES on risk-adjusted terms
+(Sharpe, which is scale-invariant, so different exposures are comparable):
+
+### BTC, 3 years, target vol calibrated on Year 1 only
+
+| rule | ann. return | Sharpe | maxDD | exposure | trades | fees |
+|---|---|---|---|---|---|---|
+| constant 40% | +15.9% | 0.87 | 25.7% | 41% | 5 | $10 |
+| constant 60% | +23.2% | 0.89 | 35.8% | 60% | 5 | $14 |
+| constant 100% | +34.3% | 0.87 | 53.7% | 100% | 1 | $10 |
+| **inverse-vol (Moreira–Muir)** | +24.4% | **0.75** | 52.0% | 90% | 105 | $377 |
+| trend-gated 67/0 | +21.0% | 0.94 | 27.1% | 40% | 108 | $1,239 |
+| **drawdown-scaled** | +17.4% | **0.99** | **21.0%** | 38% | **5** | **$10** |
+
+Constant weight gives Sharpe ~0.87–0.89 at *every* level, exactly as theory
+predicts — scaling a constant weight is leverage on the same return stream and
+cannot change Sharpe. That is the flat frontier restated.
+
+**The volatility-managed claim did not replicate.** Inverse-vol scaling scored
+0.75–0.80 against constant weight's 0.87 — worse, not better. This project had
+already measured volatility to be forecastable; forecastable is evidently not
+sufficient for it to improve risk-adjusted returns here.
+
+### Across 12 assets — which separates luck from signal
+
+| rule | mean Sharpe | improves in | mean fees |
+|---|---|---|---|
+| constant 40% | 0.55 | — | $18 |
+| **drawdown-scaled** | **0.68** | **11 / 12** | **$12** |
+| trend-gated 67/0 | 0.49 | 6 / 12 | $1,055 |
+
+**Trend-gating was a BTC artefact.** It looked positive on BTC alone (+0.06) and
+is a coin flip across the universe (6/12, mean −0.06). Breadth caught what a
+single asset could not — the same lesson as every other false positive here.
+
+**Drawdown-scaling improved Sharpe in 11 of 12, and cost LESS than the control**
+($12 vs $18) because de-risking reduces rebalancing. Only ETH was negative.
+
+### The mechanism, and why it survives when trend does not
+
+`w = 0.40 x max(0.3, price / running_peak)` is a *slow* trend signal: weight
+falls as price falls below its high. Fast trend-gating carries the same
+information and gets 6/12, because at 108 trades a year it pays ~3.5%/yr in fees
+— roughly 0.18 of Sharpe on a 20%-vol book, which is the whole edge.
+
+**The signal was never the problem; the turnover was.** Expressed through
+drawdown state it costs 5 trades instead of 108, and survives.
+
+### Why this is not yet a recommendation
+
+Every caution this project has learned applies:
+
+- **Effective sample size.** Twelve assets at rho = 0.449 is **2.02 independent
+  observations**. "11 of 12" is closer to *2 of 2* agreeing.
+- **One path.** Drawdown-scaling de-risks after falls, which flatters a sample
+  containing a sustained Year-3 decline and would *hurt* on a sharp V-shaped
+  recovery. One cycle cannot distinguish the two.
+- **I chose the parameters.** The 0.40 base and 0.30 floor are mine, not the
+  literature's. Untested for whether they sit on a plateau or a spike — and the
+  exit-policy work failed at exactly that question (rho = −0.339).
+- **No held-out test.** No parameter was fitted per asset, but the rule form was
+  chosen after seeing BTC.
+
+**Required before acting:** the same protocol that killed the exit policy —
+parameter sweep for a plateau, walk-forward across folds, and pre-registered
+criteria. On this project's record the prior should be that it does not survive.
+
+### The honest revision
+
+§10's "there is no analytical answer" was too strong. The correct statement is
+narrower: **nothing forecasts the return that would justify a weight, but a rule
+that lowers weight during drawdowns improved risk-adjusted outcomes in 11 of 12
+assets at no extra cost.** That is a defensive rule, not a forecast — it reacts
+to what has already happened rather than predicting what comes next, which is
+precisely why it is plausible after thirteen failed forecasting attempts.
