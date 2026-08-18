@@ -195,3 +195,87 @@ trading at this capital size, which is itself a decision-grade answer.
 
 **This document is engineering research, not investment advice.** Position sizing
 and capital allocation remain the owner's decisions.
+
+---
+
+## 8. Results — all four built, unlevered, real fees
+
+**Fees verified against the account: OKX Lv1, maker 0.0800%, taker 0.1000%.**
+Taker is charged throughout. This also corrects an earlier claim in this project
+that passive limit orders were a meaningful fee lever — maker saves 2bps of 10,
+a 20% reduction, not a step change.
+
+### Held-out year (2025-08 → 2026-08, BTC −46.5%)
+
+| strategy | return | maxDD | trades | exposure | fees |
+|---|---|---|---|---|---|
+| **CONTROL static 40%** | **−20.0%** | **24.3%** | 2 | 37% | **$5** |
+| B trend 30d, vol-scaled | −19.0% | 29.0% | 44 | 37% | $320 |
+| B* trend, exposure-matched | −19.3% | 29.6% | 43 | 38% | $325 |
+| D* vol-scaled, exposure-matched | −21.7% | 26.2% | 13 | 38% | $16 |
+| C cross-sectional top-3 | **−69.9%** | **76.0%** | 45 | 67% | $92 |
+| REF buy & hold | −46.5% | 53.8% | 1 | 100% | $10 |
+
+**Nothing beat the control.** B's 1.0pp return edge came with 5.3pp *more*
+drawdown and 64× the fees. D* was worse on both. C was a disaster.
+
+### Full sample (3 years) — and why it is the trap
+
+| strategy | return | maxDD | fees |
+|---|---|---|---|
+| C cross-sectional | **+176.1%** | 52.1% | $1,024 |
+| REF buy & hold | +136.6% | 53.7% | $10 |
+| B2 trend on/off | +103.0% | 38.6% | $2,210 |
+| B trend vol-scaled | +85.5% | 33.3% | $1,878 |
+| CONTROL static 40% | +53.8% | 25.7% | $10 |
+
+C is the **best strategy in-sample and the worst out-of-sample** — +176% then
+−69.9%, against holding's −46.5%. That is precisely the crash the literature
+documents: cross-sectional spreads compress in broad corrections and the strategy
+behaves like mean reversion. It is also the exact shape of every false positive
+this project has produced.
+
+### Option A — funding carry, unlevered
+
+| perp | gross carry | fees | **net on capital** |
+|---|---|---|---|
+| BTC | +1.62% APR | $12 | **+0.93% APR** |
+| ETH | +1.12% | $12 | +0.43% |
+| SOL | +0.47% | $12 | **−0.23%** |
+| DOGE | +1.87% | $11 | +1.26% |
+
+**Unlevered carry is dead at current funding.** Two compounding reductions: the
+quoted 4.0% APR on BTC halves to ~2% because capital funds *two* legs, then fees
+take it to 0.93%. SOL is negative. This is worse than any deposit account, for
+basis risk, execution risk across two venues and continuous monitoring.
+
+The 10–30% APY figures in circulation are levered 3–5x. That is available, but it
+converts a mechanical edge into a liquidation-risk bet, which is a different
+strategy from the one requested.
+
+### A flaw in my own method, stated
+
+The exposure-matching multiplier for B* and D* was computed over the **full
+window including the held-out period** — a look-ahead leak. It should have been
+derived from training data only.
+
+It does not change the conclusion, and the direction matters: the leak gives the
+active strategies a *free calibration on the test set*, and they lost anyway. The
+negative result therefore holds a fortiori. Had any of them won, the number would
+have been unusable.
+
+## 9. Conclusion
+
+At retail fees, unlevered, on a held-out year, **none of the four beat a static
+40% allocation** — the strategy that trades twice a year and pays $5.
+
+Caveats that cut both ways: the held-out window is a single 12-month bear market,
+which is one regime and not a cycle; funding history is one quarter; and the
+universe is ten majors correlating at 0.449, so effective breadth is ~2.2 assets.
+A bull-market held-out window would likely favour the trend options, and that
+test is worth running when the data exists.
+
+What is not ambiguous is the cost structure. B paid **3.2% of the book in one
+year** to finish level with a strategy that paid 0.05%. For an active strategy to
+be worth running here it must clear roughly 3–5% a year of pure friction before
+it adds anything, and none of these did.
