@@ -279,3 +279,73 @@ What is not ambiguous is the cost structure. B paid **3.2% of the book in one
 year** to finish level with a strategy that paid 0.05%. For an active strategy to
 be worth running here it must clear roughly 3–5% a year of pure friction before
 it adds anything, and none of these did.
+
+---
+
+## 10. The bear-market objection, tested — and my prediction was wrong
+
+§9 conceded that the held-out year was one bear market and predicted "a
+bull-market held-out window would likely favour the trend options". That
+prediction was **wrong**, and testing it properly is what this section does.
+
+First, the held-out year was worse than "a bear market" — it was **uniform**:
+
+| asset | held-out year | asset | held-out year |
+|---|---|---|---|
+| TRX | −6.4% | LTC | −63.5% |
+| BNB | −27.1% | XRP | −67.6% |
+| BTC | −46.4% | DOGE | −70.4% |
+| LINK | −57.2% | AVAX | −73.7% |
+| ETH | −57.9% | DOT | −80.7% |
+| SOL | −59.8% | ADA | −81.8% |
+
+**0 of 12 positive.** No asset rose, so cross-sectional strategies had no
+favourable dispersion to find and trend strategies were never tested on an
+uptrend. That single window genuinely could not separate "the strategy fails"
+from "the regime was hostile".
+
+### Testing every year instead
+
+Because **no parameter is fitted** — every constant comes from the literature or
+from a measurement on different data — there is no train/test boundary to
+violate, and each year is a clean test. Years 1 and 2 were strong bulls.
+
+At matched ~40% exposure:
+
+| window | BTC | CONTROL | B* trend | D* vol-scaled |
+|---|---|---|---|---|
+| Year 1 | +115.6% | +41.6% | **+42.7%** | +36.7% |
+| Year 2 | +104.9% | **+37.5%** | +29.3% | +38.4% |
+| Year 3 | −46.4% | −20.0% | **−19.3%** | −21.7% |
+| **chained** | | **+55.8%** | +48.9% | +48.2% |
+
+**The conclusion strengthens rather than reverses.** B* wins Year 1 by 1.1pp,
+loses Year 2 by 8.2pp, wins Year 3 by 0.7pp — and finishes 6.9pp behind a
+strategy that trades twice a year. The bear market was not what beat it.
+
+### Cross-sectional, judged against the right benchmark
+
+C runs 67–69% exposure, so the control is the wrong comparison; buy-and-hold is:
+
+| window | C | buy & hold | difference |
+|---|---|---|---|
+| Year 1 | +117.0% | +115.5% | +1.5pp |
+| Year 2 | +105.4% | +104.8% | +0.6pp |
+| Year 3 | −69.9% | −46.5% | **−23.4pp** |
+
+C tracks buy-and-hold almost exactly in bull markets — earning ~1pp for 39–43
+trades a year — and then loses 23pp in the drawdown. That is not a strategy with
+crash risk attached; **it is a leveraged-feeling proxy for holding, with a crash
+attached.**
+
+### What this changes
+
+The §9 caveat is now resolved and can be dropped: the negative result is **not**
+a bear-market artefact. Two strong bull years were available and neither trend
+nor volatility scaling beat a static 40% allocation across them at matched risk.
+
+The one caveat that survives is narrower: three consecutive years of a single
+asset class, ten names correlating at 0.449. That is roughly **2.2 effective
+independent observations** of a market cycle — enough to reject these specific
+strategies at these fees, not enough to make a general claim about trend
+following.

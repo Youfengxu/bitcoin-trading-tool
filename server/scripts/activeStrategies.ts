@@ -208,12 +208,31 @@ async function main() {
   const btc = data.get("BTC-USDT")!;
   const idxAt = (c: CandleData[], ts: number) => Math.max(0, c.findIndex((x) => x.openTime >= ts));
 
-  for (const [label, winStart] of [["FULL SAMPLE", START], ["HELD OUT (last 12m)", HOLDOUT_START]] as const) {
-    const from = idxAt(btc, winStart), to = btc.length - 1;
+  // Each 12-month window is evaluated separately.
+  //
+  // This is legitimate rather than a fishing expedition because NO PARAMETER IS
+  // FITTED: every constant comes from the literature or from a prior measurement
+  // on different data, so there is no train/test distinction to violate. The
+  // earlier "held-out" framing was conservative but unnecessary — and it was
+  // actively misleading, because ALL TWELVE assets fell in that window (TRX
+  // -6.4% was the best, ADA -81.8% the worst). A single uniformly bearish year
+  // cannot tell "trend does not work" apart from "trend does not work in a bear
+  // market", which is the whole question.
+  const YEAR = 365 * 24 * 3600 * 1000;
+  const windows: Array<readonly [string, number, number]> = [
+    ["YEAR 1  2023-08 → 2024-08", START, START + YEAR],
+    ["YEAR 2  2024-08 → 2025-08", START + YEAR, START + 2 * YEAR],
+    ["YEAR 3  2025-08 → 2026-08  (all 12 assets fell)", START + 2 * YEAR, END],
+    ["FULL SAMPLE", START, END],
+  ];
+  for (const [label, winStart, winEnd] of windows) {
+    const from = idxAt(btc, winStart);
+    const to = winEnd >= END ? btc.length - 1 : Math.max(from + 1, idxAt(btc, winEnd));
     const warm = Math.max(TREND_LOOKBACK_H, VOL_WINDOW_H, XS_LOOKBACK_H) + 1;
     const f = Math.max(from, warm);
 
-    console.log(`${label}`);
+    const hodl = btc[to].close / btc[Math.max(f, from)].close - 1;
+    console.log(`${label}   [BTC ${hodl >= 0 ? "+" : ""}${(hodl * 100).toFixed(1)}%]`);
     console.log("─".repeat(100));
     console.log(pad("strategy", 42) + pad("return", 10) + pad("maxDD", 9) + pad("trades", 9) + pad("expo", 8) + "fees");
     console.log("─".repeat(100));
