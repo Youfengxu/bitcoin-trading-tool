@@ -4,6 +4,16 @@ A professional, full-stack Bitcoin trading intelligence dashboard with real-time
 
 ---
 
+
+## Disclaimer
+
+This is a personal research and engineering project. **It is not financial advice, and it is not a
+recommendation to buy or sell anything.** Nothing here has been reviewed by anyone qualified to advise on
+investments. Trading carries risk of total loss. The software is provided as-is under the MIT licence, with no
+warranty of any kind, including no warranty that any signal, model or backtest in it is correct. If you run it
+against real funds, that is entirely your decision and your risk.
+
+
 ## Features
 
 | Feature | Description |

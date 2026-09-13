@@ -114,3 +114,7 @@ client/public/__manus__/version.json
 
 # Script-generated analysis artifacts
 replay-results.json
+
+# Manus development artefacts (agent query dumps, telemetry collector)
+.manus/
+client/public/__manus__/
